@@ -1,0 +1,9 @@
+*.pyc
+poetry.lock
+
+dev/*
+dev/**
+!dev/**/*.py
+!dev/**/*.ipynb
+!dev/**/
+dev/data/__unneeded_code.py
