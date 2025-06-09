@@ -5,5 +5,6 @@ dev/*
 dev/**
 !dev/**/*.py
 !dev/**/*.ipynb
+!dev/**/*.md
 !dev/**/
 dev/data/__unneeded_code.py
