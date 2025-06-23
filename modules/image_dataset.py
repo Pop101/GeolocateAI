@@ -35,7 +35,7 @@ def pad_to_square(image:torch.Tensor) -> torch.Tensor:
     return padded_image
         
 class ImageDataset(Dataset):
-    def __init__(self, image_paths:list, output_values:list, size:tuple=(320, 320)):
+    def __init__(self, image_paths:list, output_values:list, size:tuple=(224, 224)):
         self.image_paths = image_paths
         self.output_values = output_values
         self.size = size
@@ -79,40 +79,6 @@ class ImageDataset(Dataset):
         return image_tensor, output_val
 
 
-
-class LRUCacheDataset(Dataset):
-    def __init__(self, dataset, cache_size=5000, device='cuda'):
-        self.dataset = dataset
-        self.cache_size = cache_size
-        self.device = device
-        self.cache = OrderedDict()  # LRU cache: idx -> (image, label)
-    
-    def __len__(self):
-        return len(self.dataset)
-    
-    def __getitem__(self, idx):
-        if idx in self.cache:
-            # Move item to end (most recently used)
-            self.cache.move_to_end(idx)
-            return self.cache[idx]
-        
-        # Get from original dataset
-        image, label = self.dataset[idx]
-        
-        # Move to device
-        image = image.to(self.device)
-        label = label.to(self.device)
-        
-        # Add to cache
-        self.cache[idx] = (image, label)
-        
-        # Remove oldest item if cache is full
-        if len(self.cache) > self.cache_size:
-            self.cache.popitem(last=False)
-        
-        return image, label
-
-
 # If we ever need to recalculate stats:
 def calculate_stats(data:ImageDataset, sample_size: int) -> Tuple[list, list]:
     """Calculate mean and std from a random sample of images"""
@@ -141,11 +107,20 @@ def calculate_stats(data:ImageDataset, sample_size: int) -> Tuple[list, list]:
     raise ValueError("No images found in the sample.")
 
 if __name__ == "__main__":
+    N_SAMPLES = 10_000
+    
     # Recalculate stats
-    ds = ImageDataset(None)
+    import polars as pl
+    df = pl.read_csv("dev/data/hierarchical_clustered_coords.csv")
+    df = df.sample(n=N_SAMPLES, with_replacement=False, seed=42)
+    ds = ImageDataset(
+        image_paths=df["path"].to_list(),
+        output_values=df.select(pl.col("lat"), pl.col("lon"), pl.col("cluster_0")).rows(),
+        size=(224, 224)
+    )
     
     print("Calculating stats...")
     
-    mean, std = calculate_stats(ds, 800)
-    print("Mean:", mean)
-    print("STD:", std)
+    mean, std = calculate_stats(ds, N_SAMPLES)
+    print("MEAN = ", mean)
+    print("STD  = ", std)

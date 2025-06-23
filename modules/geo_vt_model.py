@@ -2,25 +2,27 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from modules.clip_model import ClipBaseModel, ClipOutput
+from modules.visiontranformer_model import VisionTransformerModel, VisionTransformerBase
 from modules.skipattnmlp import SkipAttentionMLP
 from modules.feature_perspective import FeaturePerspective
 
-class GeoClipModel:
-    def __init__(self, lr=0.001, num_classes=150_000, num_hidden_dims = 1024*2, clip_model_name="openai/clip-vit-large-patch14", output_type=ClipOutput.POOLER_OUTPUT, device=None):   
+class GeoVTModel:
+    """Uses a Vision Transformer as the base model, applies feature perspective and skip attention MLP for classification.
+    Note: This will probably beat a frozen CLIP base, but will probably lose to a fine-tuned CLIP model."""
+    def __init__(self, lr=0.001, num_classes=150_000, num_hidden_dims = 1024*2, vt_base:VisionTransformerBase=VisionTransformerBase.VIT_B_32, device=None):   
         self.device = device
         
-        # Initialize model layers
-        clip_model = ClipBaseModel(clip_model_name, output_type)
+        # Initialize vision transformer model
+        vt_model = VisionTransformerModel(vt_base=vt_base)
         
         # Create a single sequential model
         self.model = nn.Sequential(
-            # Clip Embed (TODO: consider using vision transformer)
-            clip_model,
-            nn.LayerNorm(clip_model.logits_dim),
+            # Vision Transformer as base head
+            vt_model,
+            nn.LayerNorm(vt_model.logits_dim),
             
             # Project to hidden dimensions if needed
-            nn.Linear(clip_model.logits_dim, num_hidden_dims) if clip_model.logits_dim != num_hidden_dims else nn.Identity(), 
+            nn.Linear(vt_model.logits_dim, num_hidden_dims) if vt_model.logits_dim != num_hidden_dims else nn.Identity(), 
             
             # Get feature perspective (different activation functions with attention)
             FeaturePerspective(num_hidden_dims, num_hidden_dims),
@@ -34,13 +36,13 @@ class GeoClipModel:
         self.criterion = nn.MSELoss()
         
         # Optimizer with different learning rates for different components
-        clip_params = []
+        vt_params = []
         geo_processor_params = []
         classifier_params = []
         
         for name, param in self.model.named_parameters():
-            if 'clip' in name.lower():
-                clip_params.append(param)
+            if 'vt_model' in name.lower() or 'vision_transformer' in name.lower():
+                vt_params.append(param)
             elif 'feature_perspective' in name.lower():
                 geo_processor_params.append(param)
             else:
@@ -48,7 +50,7 @@ class GeoClipModel:
             print(name) 
                 
         self.optimizer = torch.optim.AdamW([
-            {'params': clip_model.clip_vision_model.named_parameters().values(), 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
+            {'params': vt_model.model.named_parameters().values(), 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
             {'params': geo_processor_params, 'lr': lr * 0.5}, # Medium LR for geo reasoning
             {'params': classifier_params, 'lr': lr}           # Highest LR for final classifier
         ], lr=lr, weight_decay=1e-4)

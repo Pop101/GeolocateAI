@@ -21,22 +21,22 @@ class LayerNorm2d(nn.Module):
         return x
     
 class SkipAttentionMLP(nn.Module):
-    def __init__(self, in_features, out_features, num_hidden=4, dropout_start=0.1, dropout_end=0.05):
+    def __init__(self, in_features, out_features, depth=4, dropout_start=0.1, dropout_end=0.05):
         super().__init__()
         
-        self.num_hidden = num_hidden
+        self.depth = depth
         
         # Dims calculation for each layer
-        self.dims = mspace(in_features, max(out_features, 64), num_hidden + 1) + [out_features]
+        self.dims = mspace(in_features, max(out_features, 64), depth + 1) + [out_features]
         self.dims = list(map(round, self.dims))
         
         # Dropout values for each layer
-        dropout_values = np.linspace(dropout_start, dropout_end, num_hidden)
+        dropout_values = np.linspace(dropout_start, dropout_end, depth)
         
         # Create main processing blocks
         self.blocks = nn.ModuleList()
         
-        for i in range(num_hidden):
+        for i in range(depth):
             block = nn.Sequential(
                 nn.Linear(self.dims[i], self.dims[i + 1]),
                 nn.BatchNorm1d(self.dims[i + 1]),
@@ -47,7 +47,7 @@ class SkipAttentionMLP(nn.Module):
         
         # Create skip connections (from layer n to layer n+2)
         self.skip_connections = nn.ModuleList()
-        for i in range(num_hidden - 2):  # -2 because skip connections go two layers ahead
+        for i in range(depth - 2):  # -2 because skip connections go two layers ahead
             skip = nn.Sequential(
                 nn.Linear(self.dims[i + 1], self.dims[i + 3]),
                 nn.BatchNorm1d(self.dims[i + 3])
