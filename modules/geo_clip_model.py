@@ -27,13 +27,12 @@ class GeoClipModel:
             nn.Linear(clip_model.logits_dim, num_hidden_dims) if clip_model.logits_dim != num_hidden_dims else nn.Identity(), 
             
             # Get feature perspective (different activation functions with attention)
-            FeaturePerspective(num_hidden_dims, num_hidden_dims, num_heads=8),
+            FeaturePerspective(num_hidden_dims, num_classes, num_heads=16),
             nn.LayerNorm(num_hidden_dims),
             
-            # Skip attention MLP (d=3) for classification
-            SkipAttentionMLP(num_hidden_dims, out_features=num_classes, depth=3),
-            # Note that this ends with a sigmoid activation, so outputs are probabilities
-            # Softmax does need to be run on the logits though
+            # Sigmoid layer (no skip attn, too large for gpu)
+            nn.Linear(num_hidden_dims, num_classes),
+            nn.Sigmoid()
         )
         
         # Initialize criterion and optimizer
