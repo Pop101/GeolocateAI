@@ -39,10 +39,10 @@ def create_cluster_mapping():
         cluster_dict[row['cluster_0']] = (row['lat'], row['lon'], row['avg_dist'])
     
     # Create PyTorch tensors for batch operations
-    clusters = torch.tensor([k for k in cluster_dict.keys()], device=device)
-    lats = torch.tensor([v[0] for v in cluster_dict.values()], device=device)
-    lons = torch.tensor([v[1] for v in cluster_dict.values()], device=device)
-    avg_dists = torch.tensor([v[2] for v in cluster_dict.values()], device=device)
+    clusters = torch.tensor([k for k in cluster_dict.keys()])
+    lats = torch.tensor([v[0] for v in cluster_dict.values()])
+    lons = torch.tensor([v[1] for v in cluster_dict.values()])
+    avg_dists = torch.tensor([v[2] for v in cluster_dict.values()])
     
     return clusters, lats, lons, avg_dists
 
@@ -62,7 +62,7 @@ def get_batch_logits(batch):
     
     # Get cluster tensors
     clusters, lats, lons, avg_dists = CLUSTER_TENSORS
-    
+
     # Convert to radians for Haversine formula
     batch_lats_rad = torch.deg2rad(batch_lats)
     batch_lons_rad = torch.deg2rad(batch_lons)
@@ -190,7 +190,7 @@ def main():
         while batch_count < 25_000:
             for batch in train_loader:
                 # Move batch to GPU and convert to bfloat16
-                batch = [b.to(device, non_blocking=True, dtype=torch.bfloat16) for b in batch]
+                batch = [io.to(device, non_blocking=True, dtype=torch.bfloat16) for io in batch]
                 gc.collect()
                 
                 # Use automatic mixed precision

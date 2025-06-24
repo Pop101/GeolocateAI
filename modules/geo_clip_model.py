@@ -71,6 +71,8 @@ class GeoClipModel:
         
         # Unpack batch
         images, logits = batch
+        images = images.to(self.device, dtype=self.dtype)
+        logits = logits.to(self.device, dtype=self.dtype)
         
         # Apply transforms on-the-fly to each image if transforms provided
         if transforms:
@@ -117,8 +119,8 @@ class GeoClipModel:
                 if transforms:
                     inputs = transforms(inputs)
                 
-                inputs = inputs.to(self.device)
-                logits = logits.to(self.device)
+                inputs = inputs.to(self.device, dtype=self.dtype)
+                logits = logits.to(self.device, dtype=self.dtype)
             
                 # Get output floats
                 outputs = self.model(inputs)
