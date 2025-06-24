@@ -109,10 +109,15 @@ def calculate_stats(data:ImageDataset, sample_size: int) -> Tuple[list, list]:
 if __name__ == "__main__":
     N_SAMPLES = 10_000
     
-    # Recalculate stats
+    # Load data
     import polars as pl
     df = pl.read_csv("dev/data/hierarchical_clustered_coords.csv")
     df = df.sample(n=N_SAMPLES, with_replacement=False, seed=42)
+    df = df.with_columns(
+        (pl.lit('./dev/data') + pl.col('path')).alias('path')
+    )
+    
+    # Create dataset instance
     ds = ImageDataset(
         image_paths=df["path"].to_list(),
         output_values=df.select(pl.col("lat"), pl.col("lon"), pl.col("cluster_0")).rows(),
