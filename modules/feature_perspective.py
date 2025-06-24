@@ -24,16 +24,14 @@ class FeaturePerspective(nn.Module):
             ))
         
         # Multi-head attention for feature interaction
-        self.attention = nn.Sequential(
-            nn.MultiheadAttention(
-                embed_dim=input_dim,
-                num_heads=num_heads,
-                dropout=dropout,
-                batch_first=True
-            ),
-            nn.LayerNorm(input_dim),
-            nn.Dropout(dropout)
+        self.attention = nn.MultiheadAttention(
+            embed_dim=input_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True
         )
+        self.attention_norm = nn.LayerNorm(input_dim)
+        self.attention_dropout = nn.Dropout(dropout)
         
         # Project features to output_dim before cross-attention
         self.project_features = nn.Linear(input_dim, output_dim)
@@ -74,15 +72,25 @@ class FeaturePerspective(nn.Module):
         # Apply different activation functions to the features
         features = [extractor(x) for extractor in self.feature_extractors]
         
-        # Multi-head attention for feature interaction
-        features = self.attention(torch.cat(features, dim=1))
+        # Stack features for attention (batch_size, num_perspectives, input_dim)
+        features_stacked = torch.stack(features, dim=1)
+        
+        # Multi-head self-attention for feature interaction
+        attn_output, _ = self.attention(features_stacked, features_stacked, features_stacked)
+        attn_output = self.attention_norm(attn_output)
+        attn_output = self.attention_dropout(attn_output)
+        
+        # Average across perspectives or take the first one
+        features = attn_output.mean(dim=1)  # (batch_size, input_dim)
         
         # Project to output_dim
         features = self.project_features(features)
+        features = features.unsqueeze(1)  # Add sequence dimension for cross-attention
         
         # Cross-attention with learnable geographic queries
         geo_queries = self.geo_queries.unsqueeze(0).repeat(x.size(0), 1, 1)
-        features = self.cross_attention(features, geo_queries, features)
+        features, _ = self.cross_attention(geo_queries, features, features)
         
-        # Final refinement
+        # Final refinement - take mean across geographic queries
+        features = features.mean(dim=1)  # (batch_size, output_dim)
         return self.refinement(features)
