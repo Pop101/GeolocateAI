@@ -8,3 +8,5 @@ dev/**
 !dev/**/*.md
 !dev/**/
 dev/data/__unneeded_code.py
+
+.ssh
