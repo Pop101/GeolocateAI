@@ -3,10 +3,7 @@ import torch.nn as nn
 import numpy as np
 
 def mspace(start, end, num):
-    """Create a geometric progression from start to end with num points"""
-    if num == 1:
-        return [start]
-    factor = (end / start) ** (1 / (num - 1))
+    factor = (end / start) ** (1 / num)
     return [start * (factor ** i) for i in range(num)]
 
 class LayerNorm2d(nn.Module):
@@ -29,15 +26,9 @@ class SkipAttentionMLP(nn.Module):
         
         self.depth = depth
         
-        # Create intermediate dimensions - geometric progression from in_features to a reasonable intermediate size
-        intermediate_size = max(out_features, 64)
-        if depth > 0:
-            intermediate_dims = mspace(in_features, intermediate_size, depth + 1)
-        else:
-            intermediate_dims = [in_features]
-        
-        # Add final output dimension
-        self.dims = [round(d) for d in intermediate_dims] + [out_features]
+        # Dims calculation for each layer
+        self.dims = mspace(in_features, max(out_features, 64), depth + 1) + [out_features]
+        self.dims = list(map(round, self.dims))
         
         # Dropout values for each layer
         dropout_values = np.linspace(dropout_start, dropout_end, depth)
@@ -93,11 +84,10 @@ class SkipAttentionMLP(nn.Module):
             current = block(current)
             intermediates.append(current)
             
-            # Apply skip connections if available (after layer i has processed)
-            # Skip connection connects layer i-2 to layer i
+            # Apply skip connections if available (from 2 layers back)
             if i >= 2 and i - 2 < len(self.skip_connections):
                 skip_connection = self.skip_connections[i - 2]
-                # Fixed: use intermediates[i-2] instead of intermediates[i-1]
+                # FIX: Use intermediates[i-2] instead of intermediates[i-1]
                 current = current + skip_connection(intermediates[i-2])
         
         # Apply attention mechanism
