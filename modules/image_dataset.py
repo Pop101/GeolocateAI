@@ -10,8 +10,8 @@ from collections import OrderedDict
 from typing import Tuple
 import random
 
-MEAN = [0.4907244145870209, 0.4381392002105713, 0.407711386680603]
-STD  = [0.2914842963218689, 0.2807084321975708, 0.2719435691833496]
+MEAN =  [0.4501732885837555, 0.4423102140426636, 0.415332168340683]
+STD  =  [0.2722460627555847, 0.270404189825058, 0.2934052646160126]
 
 def pad_to_square(image:torch.Tensor) -> torch.Tensor:
     """Pad an image to make it square."""
