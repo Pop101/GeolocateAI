@@ -114,7 +114,7 @@ if __name__ == "__main__":
     df = pl.read_csv("dev/data/hierarchical_clustered_coords.csv")
     df = df.sample(n=N_SAMPLES, with_replacement=False, seed=42)
     df = df.with_columns(
-        (pl.lit('./dev/data') + pl.col('path')).alias('path')
+        (pl.lit('./dev/data/') + pl.col('path')).alias('path')
     )
     
     # Create dataset instance
