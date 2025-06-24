@@ -7,8 +7,9 @@ from modules.skipattnmlp import SkipAttentionMLP
 from modules.feature_perspective import FeaturePerspective
 
 class GeoClipModel:
-    def __init__(self, lr=0.001, num_classes=150_000, num_hidden_dims = 1024*2, clip_model_name="openai/clip-vit-large-patch14", output_type=ClipOutput.POOLER_OUTPUT, device=None):   
+    def __init__(self, lr=0.001, num_classes=150_000, num_hidden_dims = 1024*2, clip_model_name="openai/clip-vit-large-patch14", output_type=ClipOutput.POOLER_OUTPUT, device=None, dtype=torch.float32):   
         self.device = device
+        self.dtype = dtype
         
         # Initialize model layers
         clip_model = ClipBaseModel(clip_model_name, output_type)
@@ -61,6 +62,10 @@ class GeoClipModel:
             cooldown=3,
             min_lr=1e-6
         )
+        
+        # Use device parameter if provided
+        if device is not None or dtype is not None:
+            self.send_to_device(device, dtype)
     
     def train_batch(self, batch, transforms=None):
         self.model.train()
@@ -139,11 +144,15 @@ class GeoClipModel:
         """Return the current learning rate"""
         return self.optimizer.param_groups[0]['lr']
     
-    def send_to_device(self, device):
-        """Sends the current model to the specified device, mutating the model (not like .to)"""
-        self.model = self.model.to(device)
+    def send_to_device(self, device, dtype=None):
+        """Sends the current model to the specified device and dtype, mutating the model (not like .to)"""
+        if dtype is None:
+            dtype = self.dtype
+            
+        self.model = self.model.to(device=device, dtype=dtype)
         self.criterion = self.criterion.to(device)
         self.device = device
+        self.dtype = dtype
     
     def save(self, filepath):
         torch.save({

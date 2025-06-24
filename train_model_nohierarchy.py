@@ -156,9 +156,9 @@ def main():
     train_transforms = ImageDataset.get_transforms(train=True)
     test_transforms  = ImageDataset.get_transforms(train=False)
     
+    print(f"Initializing model... ({num_clusters} clusters)")
     model = GeoClipModel(num_classes=num_clusters)
-    model.send_to_device(device)
-    
+    model.send_to_device(device, dtype=torch.bfloat16)  # Use bfloat16 for training    
     # Enable automatic mixed precision
     scaler = torch.cuda.amp.GradScaler()
     
