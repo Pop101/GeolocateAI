@@ -83,7 +83,7 @@ class ImageDataset(Dataset):
 def calculate_stats(data:ImageDataset, sample_size: int) -> Tuple[list, list]:
     """Calculate mean and std from a random sample of images"""
     # Take a sample of images
-    sample_indices = random.sample(range(len(data.data)), min(sample_size, len(data.data)))
+    sample_indices = random.sample(range(len(data)), min(sample_size, len(data)))
     
     # Convert to tensor (N, C, H, W)
     sample_tensors = []
