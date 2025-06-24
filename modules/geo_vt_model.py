@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import bitsandbytes as bnb
 
 from modules.visiontranformer_model import VisionTransformerModel, VisionTransformerBase
 from modules.skipattnmlp import SkipAttentionMLP
@@ -48,8 +49,8 @@ class GeoVTModel:
             else:
                 classifier_params.append(param)
                 
-        self.optimizer = torch.optim.AdamW([
-            {'params': vt_params, 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
+        self.optimizer = bnb.optim.AdamW8bit([
+            {'params': vt_params, 'lr': lr * 0.4},            # Medium LR for untrained vt
             {'params': geo_processor_params, 'lr': lr * 0.5}, # Medium LR for geo reasoning
             {'params': classifier_params, 'lr': lr}           # Highest LR for final classifier
         ], lr=lr, weight_decay=1e-4)

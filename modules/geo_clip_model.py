@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import bitsandbytes as bnb
 
 from modules.clip_model import ClipBaseModel, ClipOutput
 from modules.skipattnmlp import SkipAttentionMLP
@@ -47,7 +48,7 @@ class GeoClipModel:
             else:
                 classifier_params.append(param)
                 
-        self.optimizer = torch.optim.AdamW([
+        self.optimizer = bnb.optim.AdamW8bit([
             {'params': clip_params, 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
             {'params': geo_processor_params, 'lr': lr * 0.5}, # Medium LR for geo reasoning
             {'params': classifier_params, 'lr': lr}           # Highest LR for final classifier
