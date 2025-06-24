@@ -39,7 +39,7 @@ class SkipAttentionMLP(nn.Module):
         for i in range(depth):
             block = nn.Sequential(
                 nn.Linear(self.dims[i], self.dims[i + 1]),
-                nn.BatchNorm1d(self.dims[i + 1]),
+                nn.LayerNorm(self.dims[i + 1]),
                 nn.GELU(),
                 nn.Dropout(dropout_values[i])
             )
@@ -50,7 +50,7 @@ class SkipAttentionMLP(nn.Module):
         for i in range(depth - 2):  # -2 because skip connections go two layers ahead
             skip = nn.Sequential(
                 nn.Linear(self.dims[i + 1], self.dims[i + 3]),
-                nn.BatchNorm1d(self.dims[i + 3])
+                nn.LayerNorm(self.dims[i + 3])
             )
             self.skip_connections.append(skip)
         
@@ -70,7 +70,7 @@ class SkipAttentionMLP(nn.Module):
                 nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm1d):
+            elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
                 

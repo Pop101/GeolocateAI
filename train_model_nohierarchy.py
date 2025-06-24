@@ -17,7 +17,7 @@ CENTROIDS_PATH = "dev/data/hierarchical_cluster_centroids.csv"
 DATA_PATH = "dev/data/hierarchical_clustered_coords.csv"
 
 IMAGE_SIZE = (224, 224)
-BATCH_SIZE = 12
+BATCH_SIZE = 3
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Enable automatic mixed precision with bfloat16
