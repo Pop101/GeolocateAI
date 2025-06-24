@@ -150,10 +150,14 @@ class GeoClipModel:
         if dtype is None:
             dtype = self.dtype
         
-        # Move each module separately
-        for name, module in self.model.named_modules():
-            if len(list(module.children())) == 0:  # Leaf modules only
-                module.to(device=device, dtype=dtype)
+        # Move all parameters and buffers individually to avoid VRAM spikes due to torch moving, THEN quantizing
+        for param in self.model.parameters():
+            param.data = param.data.to(device=device, dtype=dtype)
+            if param.grad is not None:
+                param.grad.data = param.grad.data.to(device=device, dtype=dtype)
+        
+        for buffer in self.model.buffers():
+            buffer.data = buffer.data.to(device=device, dtype=dtype)
         
         self.criterion = self.criterion.to(device)
         self.device = device
