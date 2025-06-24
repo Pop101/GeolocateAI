@@ -70,7 +70,13 @@ class GeoClipModel:
     def train_batch(self, batch, transforms=None, accumulation_steps=3):
         self.model.train()
         
+        # Unpack Batch
         images, logits = batch
+        
+        # Apply transforms on-the-fly
+        if transforms:
+            images = transforms(images)
+        
         # Split batch for accumulation
         batch_size = images.size(0) // accumulation_steps
         
