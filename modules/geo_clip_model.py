@@ -150,14 +150,20 @@ class GeoClipModel:
         if dtype is None:
             dtype = self.dtype
         
-        # Move all parameters and buffers individually to avoid VRAM spikes due to torch moving, THEN quantizing
+        # Move parameters (these can change dtype)
         for param in self.model.parameters():
             param.data = param.data.to(device=device, dtype=dtype)
             if param.grad is not None:
                 param.grad.data = param.grad.data.to(device=device, dtype=dtype)
         
+        # Move buffers (preserve integer types)
         for buffer in self.model.buffers():
-            buffer.data = buffer.data.to(device=device, dtype=dtype)
+            if buffer.dtype in [torch.int32, torch.int64, torch.long]:
+                # Keep integer buffers as integers, just move device
+                buffer.data = buffer.data.to(device=device)
+            else:
+                # Float buffers can change dtype
+                buffer.data = buffer.data.to(device=device, dtype=dtype)
         
         self.criterion = self.criterion.to(device)
         self.device = device
