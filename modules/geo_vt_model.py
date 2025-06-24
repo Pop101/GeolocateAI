@@ -67,38 +67,35 @@ class GeoVTModel:
         if device is not None or dtype is not None:
             self.send_to_device(device, dtype)
     
-    def train_batch(self, batch, transforms=None):
+    def train_batch(self, batch, transforms=None, accumulation_steps=3):
         self.model.train()
         
-        # Unpack batch
         images, logits = batch
-        images = images.to(self.device, dtype=self.dtype)
-        logits = logits.to(self.device, dtype=self.dtype)
+        # Split batch for accumulation
+        batch_size = images.size(0) // accumulation_steps
         
-        # Apply transforms on-the-fly to each image if transforms provided
-        if transforms:
-            transformed_images = transforms(images)
-        else:
-            transformed_images = images            
+        accumulated_loss = 0
+        for i in range(accumulation_steps):
+            start_idx = i * batch_size
+            end_idx = (i + 1) * batch_size
+            
+            sub_images = images[start_idx:end_idx]
+            sub_logits = logits[start_idx:end_idx]
+            
+            # Forward pass
+            outputs = self.model(sub_images)
+            loss = self.criterion(outputs, sub_logits) / accumulation_steps
+            
+            # Backward pass
+            loss.backward()
+            accumulated_loss += loss.item()
         
-        # Move to device
-        transformed_images = transformed_images.to(self.device)
-        logits = logits.to(self.device)
-                    
-        # Zero gradients
-        self.optimizer.zero_grad()
-        
-        # Forward pass
-        outputs = self.model(transformed_images)
-        outputs = outputs.squeeze()
-        loss = self.criterion(outputs, logits)
-        
-        # Backward pass
-        loss.backward()
+        # Update weights after accumulation
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
+        self.optimizer.zero_grad()
         
-        return loss.item()
+        return accumulated_loss
     
     def update_scheduler(self, val_loss):
         self.scheduler.step(val_loss)
