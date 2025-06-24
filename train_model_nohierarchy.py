@@ -96,6 +96,17 @@ def get_batch_logits(batch):
     
     return images, logits
 
+def collate_with_logits(batch):
+    """Custom collate function for DataLoaders that applies get_batch_logits transformation"""
+    # Default collate to get standard batch format
+    images = torch.stack([item[0] for item in batch])
+    outputs = torch.tensor([item[1] for item in batch])
+    
+    # Apply the logits transformation
+    images, logits = get_batch_logits((images, outputs))
+    
+    return images, logits
+
 # Prepare data
 def prepare_data(split_ratio=0.85):
     # Load data
@@ -131,6 +142,7 @@ def prepare_data(split_ratio=0.85):
         num_workers=4,
         pin_memory=True,  # Enable GPU pinning
         persistent_workers=True,
+        collate_fn=collate_with_logits
     )
     
     test_loader = DataLoader(
@@ -140,6 +152,7 @@ def prepare_data(split_ratio=0.85):
         num_workers=4,
         pin_memory=True,  # Enable GPU pinning
         persistent_workers=True,
+        collate_fn=collate_with_logits
     )
     
     num_clusters = len(df.select(pl.col("cluster_0")).unique())
@@ -177,8 +190,7 @@ def main():
         while batch_count < 25_000:
             for batch in train_loader:
                 # Move batch to GPU and convert to bfloat16
-                batch = [b.to(device, non_blocking=True) for b in batch]
-                batch = get_batch_logits(batch)
+                batch = [b.to(device, non_blocking=True, dtype=torch.bfloat16) for b in batch]
                 gc.collect()
                 
                 # Use automatic mixed precision
