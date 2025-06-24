@@ -48,7 +48,7 @@ class GeoClipModel:
             print(name) 
                 
         self.optimizer = torch.optim.AdamW([
-            {'params': clip_model.clip_vision_model.named_parameters().values(), 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
+            {'params': clip_params, 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
             {'params': geo_processor_params, 'lr': lr * 0.5}, # Medium LR for geo reasoning
             {'params': classifier_params, 'lr': lr}           # Highest LR for final classifier
         ], lr=lr, weight_decay=1e-4)
