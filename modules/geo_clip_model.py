@@ -1,14 +1,16 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import bitsandbytes as bnb
+from torch.utils.checkpoint import checkpoint
+from deepspeed.ops.adam import DeepSpeedCPUAdam
 
 from modules.clip_model import ClipBaseModel, ClipOutput
 from modules.skipattnmlp import SkipAttentionMLP
 from modules.feature_perspective import FeaturePerspective
+from modules.checkpointedsequential import CheckpointedSequential
 
 class GeoClipModel:
-    def __init__(self, lr=0.001, num_classes=150_000, num_hidden_dims = 1024*2, clip_model_name="openai/clip-vit-large-patch14", output_type=ClipOutput.POOLER_OUTPUT, device=None, dtype=torch.float32):   
+    def __init__(self, lr=0.001, num_classes=150_000, num_hidden_dims = 1024, clip_model_name="openai/clip-vit-large-patch14", output_type=ClipOutput.POOLER_OUTPUT, device=None, dtype=torch.float32):   
         self.device = device
         self.dtype = dtype
         
@@ -16,8 +18,8 @@ class GeoClipModel:
         clip_model = ClipBaseModel(clip_model_name, output_type)
         
         # Create a single sequential model
-        self.model = nn.Sequential(
-            # Clip Embed (TODO: consider using vision transformer)
+        self.model = CheckpointedSequential(
+            # Clip Embed
             clip_model,
             nn.LayerNorm(clip_model.logits_dim),
             
@@ -28,8 +30,10 @@ class GeoClipModel:
             FeaturePerspective(num_hidden_dims, num_hidden_dims, num_heads=8),
             nn.LayerNorm(num_hidden_dims),
             
-            # Skip attention MLP (d=4) for classification
+            # Skip attention MLP (d=3) for classification
             SkipAttentionMLP(num_hidden_dims, out_features=num_classes, depth=3),
+            # Note that this ends with a sigmoid activation, so outputs are probabilities
+            # Softmax does need to be run on the logits though
         )
         
         # Initialize criterion and optimizer
@@ -48,7 +52,7 @@ class GeoClipModel:
             else:
                 classifier_params.append(param)
                 
-        self.optimizer = bnb.optim.AdamW8bit([
+        self.optimizer = DeepSpeedCPUAdam([
             {'params': clip_params, 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
             {'params': geo_processor_params, 'lr': lr * 0.5}, # Medium LR for geo reasoning
             {'params': classifier_params, 'lr': lr}           # Highest LR for final classifier
@@ -148,6 +152,17 @@ class GeoClipModel:
     def get_current_lr(self):
         """Return the current learning rate"""
         return self.optimizer.param_groups[0]['lr']
+    
+    def get_model_size(self):
+        """Returns the ON-DEVICE size of the model in bytes"""
+        total_size = 0
+        for param in self.model.parameters():
+            total_size += param.numel() * param.element_size()
+        
+        for buffer in self.model.buffers():
+            total_size += buffer.numel() * buffer.element_size()
+        
+        return total_size
     
     def send_to_device(self, device, dtype=None):
         """Sends the current model to the specified device and dtype, mutating the model"""

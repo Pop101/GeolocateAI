@@ -14,16 +14,23 @@ class ClipOutput(Enum):
     
 class ClipBaseModel(nn.Module):
     """Wrapper for CLIP vision model to use in a sequential model"""
-    def __init__(self, model_name="openai/clip-vit-large-patch14", freeze=False, output_type=ClipOutput.POOLER_OUTPUT):
+    def __init__(self, model_name="openai/clip-vit-large-patch14", freeze=False, enable_checkpointing=False, output_type=ClipOutput.POOLER_OUTPUT):
         super().__init__()
         self.clip_vision_model = CLIPVisionModel.from_pretrained(model_name)
         self.output_type = output_type
+        self.enable_checkpointing = enable_checkpointing
         
         # Freeze the model
         for param in self.clip_vision_model.parameters():
             param.requires_grad = not freeze
         
     def forward(self, x):
+        if self.enable_checkpointing:
+            if self.training: # use gradient checkpointing
+                self.clip_vision_model.gradient_checkpointing_enable()
+            else: # disable gradient checkpointing for inference
+                self.clip_vision_model.gradient_checkpointing_disable()
+                
         outputs = self.clip_vision_model(pixel_values=x)
         if self.output_type == ClipOutput.POOLER_OUTPUT:
             return outputs.pooler_output

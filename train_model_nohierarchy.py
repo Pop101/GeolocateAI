@@ -24,6 +24,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_float32_matmul_precision('high')
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+torch.backends.cuda.enable_mem_efficient_sdp(True)
 
 def create_cluster_mapping():
     """Convert cluster stats to efficient mapping format for fast lookups."""
