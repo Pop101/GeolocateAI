@@ -105,6 +105,8 @@ def prepare_data(split_ratio=0.85):
     np.random.seed(42)  # For reproducibility
     df = df.with_columns(pl.lit(np.random.rand(df.shape[0])).alias("random")).filter(
         pl.col("cluster_0").is_not_null() & pl.col("cluster_0") >= 0 # remove outlier cluster
+    ).with_columns(
+        (pl.lit('./dev/data/') + pl.col('path')).alias('path')  # Add path prefix
     )
     
     # Split based on random value
@@ -126,7 +128,7 @@ def prepare_data(split_ratio=0.85):
         train_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=True, 
-        num_workers=0,
+        num_workers=4,
         pin_memory=True,  # Enable GPU pinning
         persistent_workers=True,
     )
@@ -135,7 +137,7 @@ def prepare_data(split_ratio=0.85):
         test_dataset, 
         batch_size=1, 
         shuffle=False,
-        num_workers=0,
+        num_workers=4,
         pin_memory=True,  # Enable GPU pinning
         persistent_workers=True,
     )
