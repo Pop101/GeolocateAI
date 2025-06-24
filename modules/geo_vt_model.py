@@ -9,7 +9,7 @@ from modules.feature_perspective import FeaturePerspective
 class GeoVTModel:
     """Uses a Vision Transformer as the base model, applies feature perspective and skip attention MLP for classification.
     Note: This will probably beat a frozen CLIP base, but will probably lose to a fine-tuned CLIP model."""
-    def __init__(self, lr=0.001, num_classes=150_000, num_hidden_dims = 1024*2, vt_base:VisionTransformerBase=VisionTransformerBase.VIT_B_32, device=None):   
+    def __init__(self, lr=0.001, num_classes=150_000, num_hidden_dims = 1024*2, vt_base:VisionTransformerBase=VisionTransformerBase.VIT_B_32, device=None, dtype=torch.float32):   
         self.device = device
         
         # Initialize vision transformer model
@@ -47,10 +47,9 @@ class GeoVTModel:
                 geo_processor_params.append(param)
             else:
                 classifier_params.append(param)
-            print(name) 
                 
         self.optimizer = torch.optim.AdamW([
-            {'params': vt_model.model.named_parameters().values(), 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
+            {'params': vt_params, 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
             {'params': geo_processor_params, 'lr': lr * 0.5}, # Medium LR for geo reasoning
             {'params': classifier_params, 'lr': lr}           # Highest LR for final classifier
         ], lr=lr, weight_decay=1e-4)
@@ -63,6 +62,9 @@ class GeoVTModel:
             cooldown=3,
             min_lr=1e-6
         )
+        
+        if device is not None or dtype is not None:
+            self.send_to_device(device, dtype)
     
     def train_batch(self, batch, transforms=None):
         self.model.train()
@@ -141,11 +143,19 @@ class GeoVTModel:
         """Return the current learning rate"""
         return self.optimizer.param_groups[0]['lr']
     
-    def send_to_device(self, device):
-        """Sends the current model to the specified device, mutating the model (not like .to)"""
-        self.model = self.model.to(device)
+    def send_to_device(self, device, dtype=None):
+        """Sends the current model to the specified device and dtype, mutating the model"""
+        if dtype is None:
+            dtype = self.dtype
+        
+        # Move each module separately
+        for name, module in self.model.named_modules():
+            if len(list(module.children())) == 0:  # Leaf modules only
+                module.to(device=device, dtype=dtype)
+        
         self.criterion = self.criterion.to(device)
         self.device = device
+        self.dtype = dtype
     
     def save(self, filepath):
         torch.save({

@@ -24,11 +24,11 @@ class GeoClipModel:
             nn.Linear(clip_model.logits_dim, num_hidden_dims) if clip_model.logits_dim != num_hidden_dims else nn.Identity(), 
             
             # Get feature perspective (different activation functions with attention)
-            FeaturePerspective(num_hidden_dims, num_hidden_dims),
+            FeaturePerspective(num_hidden_dims, num_hidden_dims, num_heads=8),
             nn.LayerNorm(num_hidden_dims),
             
             # Skip attention MLP (d=4) for classification
-            SkipAttentionMLP(num_hidden_dims, out_features=num_classes),
+            SkipAttentionMLP(num_hidden_dims, out_features=num_classes, depth=3),
         )
         
         # Initialize criterion and optimizer
@@ -46,7 +46,6 @@ class GeoClipModel:
                 geo_processor_params.append(param)
             else:
                 classifier_params.append(param)
-            print(name) 
                 
         self.optimizer = torch.optim.AdamW([
             {'params': clip_params, 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
@@ -145,11 +144,15 @@ class GeoClipModel:
         return self.optimizer.param_groups[0]['lr']
     
     def send_to_device(self, device, dtype=None):
-        """Sends the current model to the specified device and dtype, mutating the model (not like .to)"""
+        """Sends the current model to the specified device and dtype, mutating the model"""
         if dtype is None:
             dtype = self.dtype
-            
-        self.model = self.model.to(device=device, dtype=dtype)
+        
+        # Move each module separately
+        for name, module in self.model.named_modules():
+            if len(list(module.children())) == 0:  # Leaf modules only
+                module.to(device=device, dtype=dtype)
+        
         self.criterion = self.criterion.to(device)
         self.device = device
         self.dtype = dtype
