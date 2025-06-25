@@ -14,8 +14,13 @@ class FeaturePerspective(nn.Module):
         self.input_dim = input_dim
         self.output_dim = output_dim
         
+        # Round up to nearest multiple of num_heads
+        def round_up_to_multiple(x, multiple):
+            return ((x + multiple - 1) // multiple) * multiple
+        
+        nearest_valid_input_dim = round_up_to_multiple(input_dim, num_heads)
+        
         # Apply different activation functions to the features
-        nearest_valid_input_dim = input_dim if input_dim % num_heads == 0 else (input_dim // num_heads + 1) * num_heads
         self.feature_extractors = nn.ModuleList()
         for activation in activation_perspectives:
             self.feature_extractors.append(nn.Sequential(
@@ -35,20 +40,20 @@ class FeaturePerspective(nn.Module):
         self.attention_dropout = nn.Dropout(dropout)
         
         # Project features to output_dim before cross-attention
-        nearest_valid_ouput_dim = output_dim if output_dim % num_heads == 0 else (output_dim // num_heads + 1) * num_heads
-        self.project_features = nn.Linear(nearest_valid_input_dim, nearest_valid_ouput_dim)
+        nearest_valid_output_dim = round_up_to_multiple(output_dim, num_heads)
+        self.project_features = nn.Linear(nearest_valid_input_dim, nearest_valid_output_dim)
         
         # Cross-attention with learnable geographic queries
-        self.geo_queries = nn.Parameter(torch.randn(8, nearest_valid_ouput_dim) * 0.02)
+        self.geo_queries = nn.Parameter(torch.randn(8, nearest_valid_output_dim) * 0.02)
         self.cross_attention = nn.MultiheadAttention(
-            embed_dim=nearest_valid_ouput_dim,
+            embed_dim=nearest_valid_output_dim,
             num_heads=num_heads // 2,
             dropout=dropout,
             batch_first=True
         )
         
         self.refinement = nn.Sequential(
-            nn.Linear(nearest_valid_ouput_dim, output_dim),
+            nn.Linear(nearest_valid_output_dim, output_dim),
             nn.GELU(),
         )
         
