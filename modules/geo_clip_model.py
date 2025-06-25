@@ -27,14 +27,9 @@ class GeoClipModel:
             
             # Get feature perspective (different activation functions with attention)
             FeaturePerspective(num_hidden_dims, num_hidden_dims, num_heads=16),
-            nn.LayerNorm(num_hidden_dims),
             
-            # Sigmoid layer (no skip attn, too large for gpu)
-            nn.Linear(num_hidden_dims, num_classes),
-            nn.Sigmoid(),
-            
-            # Final linear layer to allow negative logits
-            nn.Linear(num_classes, num_classes)
+            # Single linear (no skip attn, too large for gpu)
+            nn.Linear(num_hidden_dims, num_classes)
         )
         
         # Initialize criterion and optimizer
