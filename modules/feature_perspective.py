@@ -15,38 +15,40 @@ class FeaturePerspective(nn.Module):
         self.output_dim = output_dim
         
         # Apply different activation functions to the features
+        nearest_valid_input_dim = input_dim if input_dim % num_heads == 0 else (input_dim // num_heads + 1) * num_heads
         self.feature_extractors = nn.ModuleList()
         for activation in activation_perspectives:
             self.feature_extractors.append(nn.Sequential(
-                nn.Linear(input_dim, input_dim),
+                nn.Linear(input_dim, nearest_valid_input_dim),
                 activation,
                 nn.Dropout(dropout)
             ))
         
         # Multi-head attention for feature interaction
         self.attention = nn.MultiheadAttention(
-            embed_dim=input_dim,
+            embed_dim=nearest_valid_input_dim,
             num_heads=num_heads,
             dropout=dropout,
             batch_first=True
         )
-        self.attention_norm = nn.LayerNorm(input_dim)
+        self.attention_norm = nn.LayerNorm(nearest_valid_input_dim)
         self.attention_dropout = nn.Dropout(dropout)
         
         # Project features to output_dim before cross-attention
-        self.project_features = nn.Linear(input_dim, output_dim)
+        nearest_valid_ouput_dim = output_dim if output_dim % num_heads == 0 else (output_dim // num_heads + 1) * num_heads
+        self.project_features = nn.Linear(nearest_valid_input_dim, nearest_valid_ouput_dim)
         
         # Cross-attention with learnable geographic queries
-        self.geo_queries = nn.Parameter(torch.randn(8, output_dim) * 0.02)
+        self.geo_queries = nn.Parameter(torch.randn(8, nearest_valid_ouput_dim) * 0.02)
         self.cross_attention = nn.MultiheadAttention(
-            embed_dim=output_dim,
+            embed_dim=nearest_valid_ouput_dim,
             num_heads=num_heads // 2,
             dropout=dropout,
             batch_first=True
         )
         
         self.refinement = nn.Sequential(
-            nn.Linear(output_dim, output_dim),
+            nn.Linear(nearest_valid_ouput_dim, output_dim),
             nn.GELU(),
         )
         
