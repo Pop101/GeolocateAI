@@ -16,8 +16,12 @@ import gc
 CENTROIDS_PATH = "dev/data/hierarchical_cluster_centroids.csv"
 DATA_PATH = "dev/data/hierarchical_clustered_coords.csv"
 
-IMAGE_SIZE = (224, 224)
-BATCH_SIZE = 3
+IMAGE_SIZE       = (224, 224) # must match clip
+TEST_TRAIN_SPLIT = 0.85       # what percent of data to use for training vs testing
+BATCH_SIZE       = 12         # effective batch size. computation load reduced by a factor of 3 by gradient accumulation
+BATCH_SIZE_TEST  = 24         # note that for testing, we don't need to calc gradients, so less resources needed
+TEST_EVERY       = 1_000      # test every xxx batches during training
+MAX_BATCHES      = 100_000    # maximum number of batches to train for (stand-in for max epochs)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Enable automatic mixed precision with bfloat16
@@ -109,7 +113,7 @@ def collate_with_logits(batch):
     return images, logits
 
 # Prepare data
-def prepare_data(split_ratio=0.85):
+def prepare_data():
     # Load data
     df = pl.read_csv(DATA_PATH)
     
@@ -122,14 +126,14 @@ def prepare_data(split_ratio=0.85):
     )
     
     # Split based on random value
-    train_df = df.filter(pl.col("random") <= split_ratio).drop("random")
-    test_df = df.filter(pl.col("random") > split_ratio).drop("random")
+    train_df = df.filter(pl.col("random") <= TEST_TRAIN_SPLIT).drop("random")
+    test_df  = df.filter(pl.col("random") > TEST_TRAIN_SPLIT).drop("random")
     
     train_input_values = train_df.select(pl.col("path")).to_series().to_list()
-    test_input_values = test_df.select(pl.col("path")).to_series().to_list()
+    test_input_values  = test_df.select(pl.col("path")).to_series().to_list()
 
     train_output_values = train_df.select(pl.col("lat"), pl.col("lon"), pl.col("cluster_0")).rows()
-    test_output_values = test_df.select(pl.col("lat"), pl.col("lon"), pl.col("cluster_0")).rows()
+    test_output_values  = test_df.select(pl.col("lat"), pl.col("lon"), pl.col("cluster_0")).rows()
 
     # Create datasets
     train_dataset = ImageDataset(image_paths=train_input_values, output_values=train_output_values, size=IMAGE_SIZE)    
@@ -141,17 +145,17 @@ def prepare_data(split_ratio=0.85):
         batch_size=BATCH_SIZE, 
         shuffle=True, 
         num_workers=4,
-        pin_memory=True,  # Enable GPU pinning
+        pin_memory=True,
         persistent_workers=True,
         collate_fn=collate_with_logits
     )
     
     test_loader = DataLoader(
         test_dataset, 
-        batch_size=1, 
+        batch_size=BATCH_SIZE_TEST, 
         shuffle=False,
         num_workers=4,
-        pin_memory=True,  # Enable GPU pinning
+        pin_memory=True,
         persistent_workers=True,
         collate_fn=collate_with_logits
     )
@@ -188,7 +192,7 @@ def main():
         test_loss, test_acc = float("inf"), float("inf")
         batch_count = 0
         
-        while batch_count < 25_000:
+        while batch_count < MAX_BATCHES:
             for batch in train_loader:
                 # Move batch to GPU and convert to bfloat16
                 batch = [io.to(device, non_blocking=True, dtype=torch.bfloat16) for io in batch]
@@ -202,7 +206,7 @@ def main():
                 pbar.update(1)
                 
                 pbar.set_postfix({"Loss": f"{loss:.4f}", "Test Loss": f"{test_loss:.4f}", "Test Acc": f"{test_acc:.4f}"})
-                if batch_count % 100 == 0:
+                if batch_count % TEST_EVERY == 0:
                     test_loss, test_acc = model.evaluate(tqdm(test_loader, desc="Testing", unit="batch"), transforms=test_transforms)
                     model.update_scheduler(test_loss)
                     with open("models/losses.csv", "a") as f:
