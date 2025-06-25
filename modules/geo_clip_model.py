@@ -27,7 +27,7 @@ class GeoClipModel:
             nn.Linear(clip_model.logits_dim, num_hidden_dims) if clip_model.logits_dim != num_hidden_dims else nn.Identity(), 
             
             # Get feature perspective (different activation functions with attention)
-            FeaturePerspective(num_hidden_dims, num_classes, num_heads=16),
+            FeaturePerspective(num_hidden_dims, num_hidden_dims, num_heads=16),
             nn.LayerNorm(num_hidden_dims),
             
             # Sigmoid layer (no skip attn, too large for gpu)
