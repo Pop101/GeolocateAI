@@ -8,6 +8,8 @@ from modules.skipattnmlp import SkipAttentionMLP
 from modules.feature_perspective import FeaturePerspective
 from modules.checkpointedsequential import CheckpointedSequential
 
+import warnings
+
 class GeoClipModel:
     def __init__(self, lr=0.001, num_classes=150_000, num_hidden_dims = 1024*2, clip_model_name="openai/clip-vit-large-patch14", output_type=ClipOutput.POOLER_OUTPUT, device=None, dtype=torch.float32):   
         self.device = device
@@ -94,6 +96,9 @@ class GeoClipModel:
             # Forward pass
             outputs = self.model(sub_images)
             loss = self.criterion(outputs, sub_logits) / accumulation_steps
+            if loss.isnan().any():
+                warnings.warn(f"NaN loss encountered in batch {i+1}/{accumulation_steps}. Skipping this batch.")
+                continue
             
             # Backward pass
             loss.backward()
