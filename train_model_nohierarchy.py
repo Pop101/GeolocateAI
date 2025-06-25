@@ -206,6 +206,7 @@ def main():
                     model.update_scheduler(test_loss)
                     with open("models/losses.csv", "a") as f:
                         f.write(f"{batch_count},{model.get_current_lr()},{loss},{test_loss},{test_acc}\n")
+                    model.save("models/image_rating_model_training.pth")
                     print('\n')
  
     except KeyboardInterrupt:
