@@ -28,8 +28,11 @@ class GeoClipModel:
             # Get feature perspective (different activation functions with attention)
             FeaturePerspective(num_hidden_dims, num_hidden_dims, num_heads=16),
             
-            # Single linear (no skip attn, too large for gpu)
-            nn.Linear(num_hidden_dims, num_classes)
+            # Use skipattn to draw from the feature perspective
+            SkipAttentionMLP(num_hidden_dims, min(num_hidden_dims*4, num_classes), depth=4),
+            
+            # Single linear expand to logits
+            nn.Linear(min(num_hidden_dims*4, num_classes), num_classes)
         )
         
         # Initialize criterion and optimizer
