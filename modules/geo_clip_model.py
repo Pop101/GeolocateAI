@@ -31,7 +31,10 @@ class GeoClipModel:
             
             # Sigmoid layer (no skip attn, too large for gpu)
             nn.Linear(num_hidden_dims, num_classes),
-            nn.Sigmoid()
+            nn.Sigmoid(),
+            
+            # Final linear layer to allow negative logits
+            nn.Linear(num_classes, num_classes)
         )
         
         # Initialize criterion and optimizer

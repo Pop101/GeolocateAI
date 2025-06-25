@@ -54,7 +54,7 @@ def create_cluster_mapping():
 # Create the mapping at module level for reuse
 CLUSTER_TENSORS = create_cluster_mapping()
 
-def get_batch_logits(batch):
+def get_batch_logits(batch, boost_value = 10):
     """
     Converts a batch (images, [lat, lon, cluster]) to 
     batch (images, logits), scoring based on distance to cluster centroid
@@ -92,12 +92,7 @@ def get_batch_logits(batch):
     
     # Ensure the correct cluster has the highest logit
     correct_cluster_mask = (clusters.unsqueeze(0) == batch_clusters.unsqueeze(1))  # [batch_size, n_clusters]
-    logits = torch.where(correct_cluster_mask, logits + 1.0, logits)  # Add small boost to correct clusters
-    
-    # Normalize logits to [0,1] range
-    min_logits = logits.min(dim=1, keepdim=True)[0]  # [batch_size, 1]
-    max_logits = logits.max(dim=1, keepdim=True)[0]  # [batch_size, 1]
-    logits = (logits - min_logits) / (max_logits - min_logits)  # [batch_size, n_clusters]
+    logits = torch.where(correct_cluster_mask, logits + boost_value, logits)  # Add small boost to correct clusters
     
     return images, logits
 
