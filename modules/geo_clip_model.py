@@ -139,19 +139,32 @@ class GeoClipModel:
                 outputs = outputs.view(logits.shape)
                 loss = self.criterion(outputs, logits)
                 
+                if loss.isnan().any():
+                    warnings.warn("NaN loss encountered during evaluation. Skipping this batch.")
+                    continue
+                
+                # Get probabilities from logits
+                input_prob  = torch.softmax(logits, dim=-1)
+                output_prob = torch.softmax(outputs, dim=-1)
+                
                 # Tallies
                 batch_size = inputs.size(0)
-                total_loss += loss.item() * batch_size
-                total_hits += (outputs.argmax(dim=1) == logits.argmax(dim=1)).float().sum()
+                total_loss += loss.item() * batch_size # loss retrurns element-averaged, we want total
+                total_hits += (output_prob.argmax(dim=1) == input_prob.argmax(dim=1)).float().sum()
                 num_samples += batch_size
         
         return total_loss / num_samples, total_hits / num_samples
     
     def __call__(self, image: torch.Tensor) -> torch.Tensor:
-        """Return predicted probabilities for a single image"""
+        """Return predicted logits for a single image"""
         self.model.eval()
         with torch.no_grad():
             return self.model(image)
+        
+    def predict_probabilities(self, image: torch.Tensor) -> torch.Tensor:
+        """Return predicted probabilities for a single image"""
+        logits = self(image)
+        return torch.softmax(logits, dim=-1)
         
     def get_current_lr(self):
         """Return the current learning rate"""
