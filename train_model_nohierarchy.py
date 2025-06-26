@@ -20,8 +20,8 @@ IMAGE_SIZE       = (224, 224) # must match clip
 TEST_TRAIN_SPLIT = 0.85       # what percent of data to use for training vs testing
 BATCH_SIZE       = 12         # effective batch size. computation load reduced by a factor of 3 by gradient accumulation
 BATCH_SIZE_TEST  = 24         # note that for testing, we don't need to calc gradients, so less resources needed
-TEST_EVERY       = 1_000      # test every xxx batches during training
-TEST_FRAC        = 0.075      # test this fraction of the test set each time (to speed up testing)
+TEST_EVERY       = 1_000      # test every xxx batches during training -> ~15m
+TEST_FRAC        = 0.015      # test this fraction of the test set each time (to speed up testing) -> ~ 5m
 MAX_BATCHES      = 100_000    # maximum number of batches to train for (stand-in for max epochs)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
