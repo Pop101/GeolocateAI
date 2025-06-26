@@ -74,9 +74,13 @@ class ImageDataset(Dataset):
         output_val = self.output_values[idx]
         
         # Load image. Note it is the user's job to apply transforms if desired
-        image = Image.open(img_path).convert("RGB")
-        image_tensor = self.get_size_transpose()(image)
-        return image_tensor, output_val
+        try:
+            image = Image.open(img_path).convert("RGB")
+            image_tensor = self.get_size_transpose()(image)
+            return image_tensor, output_val
+        except OSError as e:
+            print(f"Error loading image {img_path}: {e}")
+            return np.nan, output_val
 
 
 # If we ever need to recalculate stats:
