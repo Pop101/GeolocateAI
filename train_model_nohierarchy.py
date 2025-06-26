@@ -7,7 +7,7 @@ from modules.image_dataset import ImageDataset
 # from modules.visiontranformer_model import VisionTransformerModel
 from modules.geo_clip_model import GeoClipModel
 
-import itertools
+from itertools import islice
 from tqdm import tqdm
 import os
 import shutil
@@ -21,6 +21,7 @@ TEST_TRAIN_SPLIT = 0.85       # what percent of data to use for training vs test
 BATCH_SIZE       = 12         # effective batch size. computation load reduced by a factor of 3 by gradient accumulation
 BATCH_SIZE_TEST  = 24         # note that for testing, we don't need to calc gradients, so less resources needed
 TEST_EVERY       = 1_000      # test every xxx batches during training
+TEST_FRAC        = 0.075      # test this fraction of the test set each time (to speed up testing)
 MAX_BATCHES      = 100_000    # maximum number of batches to train for (stand-in for max epochs)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -148,7 +149,7 @@ def prepare_data():
     test_loader = DataLoader(
         test_dataset, 
         batch_size=BATCH_SIZE_TEST, 
-        shuffle=False,
+        shuffle=True,
         num_workers=4,
         pin_memory=True,
         persistent_workers=True,
@@ -202,13 +203,17 @@ def main():
                 
                 pbar.set_postfix({"Loss": f"{loss:.4f}", "Test Loss": f"{test_loss:.4f}", "Test Acc": f"{test_acc:.4f}"})
                 if batch_count % TEST_EVERY == 0:
-                    test_loss, test_acc = model.evaluate(tqdm(test_loader, desc="Testing", unit="batch"), transforms=test_transforms)
+                    # Split test loader by max test batches for this test iteration (full test set takes ~ 8 hrs)
+                    test_batches = int(len(test_loader) * TEST_FRAC)
+                    test_subset = islice(test_loader, test_batches)
+                    
+                    # Run test
+                    test_loss, test_acc = model.evaluate(tqdm(test_subset, desc="Testing", unit="batch", total=test_batches), transforms=test_transforms)
                     model.update_scheduler(test_loss)
                     with open("models/losses.csv", "a") as f:
                         f.write(f"{batch_count},{model.get_current_lr()},{loss},{test_loss},{test_acc}\n")
                     model.save("models/image_rating_model_training.pth")
                     print('\n')
- 
     except KeyboardInterrupt:
         print("Training interrupted. Saving final model...")
     finally:
