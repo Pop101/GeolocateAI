@@ -3,54 +3,58 @@ import torch.nn as nn
 import torch.optim as optim
 import bitsandbytes as bnb
 
-from modules.visiontranformer_model import VisionTransformerModel, VisionTransformerBase
+from modules.clip_model import ClipBaseModel, ClipOutput
 from modules.skipattnmlp import SkipAttentionMLP
 from modules.feature_perspective import FeaturePerspective
+from modules.checkpointedsequential import CheckpointedSequential
 
-class GeoVTModel:
-    """Uses a Vision Transformer as the base model, applies feature perspective and skip attention MLP for classification.
-    Note: This will probably beat a frozen CLIP base, but will probably lose to a fine-tuned CLIP model."""
-    def __init__(self, lr=0.001, num_classes=150_000, num_hidden_dims = 1024*2, vt_base:VisionTransformerBase=VisionTransformerBase.VIT_B_32, device=None, dtype=torch.float32):   
+import warnings
+
+class GeoFrozenClipModel:
+    def __init__(self, lr=0.001, num_classes=150_000, num_head_dims=1024*2, num_hidden_dims=1024*8, heads=32, depth=8, clip_model_name="openai/clip-vit-large-patch14", output_type=ClipOutput.POOLER_OUTPUT, device=None, dtype=torch.float32):   
         self.device = device
+        self.dtype = dtype
         
-        # Initialize vision transformer model
-        vt_model = VisionTransformerModel(vt_base=vt_base)
+        # Initialize model layers
+        clip_model = ClipBaseModel(clip_model_name, output_type, freeze=True)
         
         # Create a single sequential model
-        self.model = nn.Sequential(
-            # Vision Transformer as base head
-            vt_model,
-            nn.LayerNorm(vt_model.logits_dim),
+        self.model = CheckpointedSequential(
+            # Clip Embed
+            clip_model,
+            nn.LayerNorm(clip_model.logits_dim),
             
             # Project to hidden dimensions if needed
-            nn.Linear(vt_model.logits_dim, num_hidden_dims) if vt_model.logits_dim != num_hidden_dims else nn.Identity(), 
+            nn.Linear(clip_model.logits_dim, num_head_dims) if clip_model.logits_dim != num_head_dims else nn.Identity(), 
             
             # Get feature perspective (different activation functions with attention)
-            FeaturePerspective(num_hidden_dims, num_hidden_dims),
-            nn.LayerNorm(num_hidden_dims),
+            FeaturePerspective(num_head_dims, num_head_dims, num_heads=heads),
             
-            # Skip attention MLP (d=4) for classification
-            SkipAttentionMLP(num_hidden_dims, out_features=num_classes),
+            # Use skipattn to draw from the feature perspective
+            SkipAttentionMLP(num_head_dims, num_hidden_dims, depth=depth),
+            
+            # Single linear expand to logits
+            nn.Linear(num_hidden_dims, num_classes)
         )
         
         # Initialize criterion and optimizer
         self.criterion = nn.MSELoss()
         
         # Optimizer with different learning rates for different components
-        vt_params = []
+        clip_params = []
         geo_processor_params = []
         classifier_params = []
         
         for name, param in self.model.named_parameters():
-            if 'vt_model' in name.lower() or 'vision_transformer' in name.lower():
-                vt_params.append(param)
+            if 'clip' in name.lower():
+                clip_params.append(param)
             elif 'feature_perspective' in name.lower():
                 geo_processor_params.append(param)
             else:
                 classifier_params.append(param)
-                
+
         self.optimizer = bnb.optim.AdamW8bit([
-            {'params': vt_params, 'lr': lr * 0.4},            # Medium LR for untrained vt
+            {'params': clip_params, 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
             {'params': geo_processor_params, 'lr': lr * 0.5}, # Medium LR for geo reasoning
             {'params': classifier_params, 'lr': lr}           # Highest LR for final classifier
         ], lr=lr, weight_decay=1e-4)
@@ -64,6 +68,7 @@ class GeoVTModel:
             min_lr=1e-6
         )
         
+        # Use device parameter if provided
         if device is not None or dtype is not None:
             self.send_to_device(device, dtype)
     
@@ -91,6 +96,9 @@ class GeoVTModel:
             # Forward pass
             outputs = self.model(sub_images)
             loss = self.criterion(outputs, sub_logits) / accumulation_steps
+            if loss.isnan().any():
+                warnings.warn(f"NaN loss encountered in batch {i+1}/{accumulation_steps}. Skipping this batch.")
+                continue
             
             # Backward pass
             loss.backward()
@@ -131,33 +139,67 @@ class GeoVTModel:
                 outputs = outputs.view(logits.shape)
                 loss = self.criterion(outputs, logits)
                 
+                if loss.isnan().any():
+                    warnings.warn("NaN loss encountered during evaluation. Skipping this batch.")
+                    continue
+                
+                # Get probabilities from logits
+                input_prob  = torch.softmax(logits, dim=-1)
+                output_prob = torch.softmax(outputs, dim=-1)
+                
                 # Tallies
                 batch_size = inputs.size(0)
-                total_loss += loss.item() * batch_size
-                total_hits += (outputs.argmax(dim=1) == logits.argmax(dim=1)).float().sum()
+                total_loss += loss.item() * batch_size # loss retrurns element-averaged, we want total
+                total_hits += (output_prob.argmax(dim=1) == input_prob.argmax(dim=1)).float().sum()
                 num_samples += batch_size
         
         return total_loss / num_samples, total_hits / num_samples
     
     def __call__(self, image: torch.Tensor) -> torch.Tensor:
-        """Return predicted probabilities for a single image"""
+        """Return predicted logits for a single image"""
         self.model.eval()
         with torch.no_grad():
             return self.model(image)
         
+    def predict_probabilities(self, image: torch.Tensor) -> torch.Tensor:
+        """Return predicted probabilities for a single image"""
+        logits = self(image)
+        return torch.softmax(logits, dim=-1)
+        
     def get_current_lr(self):
         """Return the current learning rate"""
         return self.optimizer.param_groups[0]['lr']
+    
+    def get_model_size(self):
+        """Returns the ON-DEVICE size of the model in bytes"""
+        total_size = 0
+        for param in self.model.parameters():
+            total_size += param.numel() * param.element_size()
+        
+        for buffer in self.model.buffers():
+            total_size += buffer.numel() * buffer.element_size()
+        
+        return total_size
     
     def send_to_device(self, device, dtype=None):
         """Sends the current model to the specified device and dtype, mutating the model"""
         if dtype is None:
             dtype = self.dtype
         
-        # Move each module separately
-        for name, module in self.model.named_modules():
-            if len(list(module.children())) == 0:  # Leaf modules only
-                module.to(device=device, dtype=dtype)
+        # Move parameters (these can change dtype)
+        for param in self.model.parameters():
+            param.data = param.data.to(device=device, dtype=dtype)
+            if param.grad is not None:
+                param.grad.data = param.grad.data.to(device=device, dtype=dtype)
+        
+        # Move buffers (preserve integer types)
+        for buffer in self.model.buffers():
+            if buffer.dtype in [torch.int32, torch.int64, torch.long]:
+                # Keep integer buffers as integers, just move device
+                buffer.data = buffer.data.to(device=device)
+            else:
+                # Float buffers can change dtype
+                buffer.data = buffer.data.to(device=device, dtype=dtype)
         
         self.criterion = self.criterion.to(device)
         self.device = device

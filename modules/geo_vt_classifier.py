@@ -3,58 +3,57 @@ import torch.nn as nn
 import torch.optim as optim
 import bitsandbytes as bnb
 
-from modules.clip_model import ClipBaseModel, ClipOutput
+from modules.visiontranformer_model import VisionTransformerModel, VisionTransformerBase
 from modules.skipattnmlp import SkipAttentionMLP
 from modules.feature_perspective import FeaturePerspective
 from modules.checkpointedsequential import CheckpointedSequential
 
 import warnings
 
-class GeoClipModel:
-    def __init__(self, lr=0.001, num_classes=150_000, num_hidden_dims = 1024*2, clip_model_name="openai/clip-vit-large-patch14", output_type=ClipOutput.POOLER_OUTPUT, device=None, dtype=torch.float32):   
+class GeoVTModel:
+    def __init__(self, lr=0.001, num_classes=150_000, num_head_dims=1024*2, num_hidden_dims=1024*8, heads=32, depth=8, vt_base:VisionTransformerBase=VisionTransformerBase.VIT_B_32, device=None, dtype=torch.float32):   
         self.device = device
-        self.dtype = dtype
         
-        # Initialize model layers
-        clip_model = ClipBaseModel(clip_model_name, output_type)
+        # Initialize vision transformer model
+        vt_model = VisionTransformerModel(vt_base=vt_base)
         
         # Create a single sequential model
         self.model = CheckpointedSequential(
-            # Clip Embed
-            clip_model,
-            nn.LayerNorm(clip_model.logits_dim),
+            # Vision Transformer as base head
+            vt_model,
+            nn.LayerNorm(vt_model.logits_dim),
             
             # Project to hidden dimensions if needed
-            nn.Linear(clip_model.logits_dim, num_hidden_dims) if clip_model.logits_dim != num_hidden_dims else nn.Identity(), 
+            nn.Linear(vt_model.logits_dim, num_head_dims) if vt_model.logits_dim != num_head_dims else nn.Identity(), 
             
             # Get feature perspective (different activation functions with attention)
-            FeaturePerspective(num_hidden_dims, num_hidden_dims, num_heads=16),
+            FeaturePerspective(num_head_dims, num_head_dims, num_heads=heads),
             
             # Use skipattn to draw from the feature perspective
-            SkipAttentionMLP(num_hidden_dims, min(num_hidden_dims*4, num_classes), depth=4),
+            SkipAttentionMLP(num_head_dims, num_hidden_dims, depth=depth),
             
             # Single linear expand to logits
-            nn.Linear(min(num_hidden_dims*4, num_classes), num_classes)
+            nn.Linear(num_hidden_dims, num_classes)
         )
         
         # Initialize criterion and optimizer
         self.criterion = nn.MSELoss()
         
         # Optimizer with different learning rates for different components
-        clip_params = []
+        vt_params = []
         geo_processor_params = []
         classifier_params = []
         
         for name, param in self.model.named_parameters():
-            if 'clip' in name.lower():
-                clip_params.append(param)
+            if 'vt_model' in name.lower() or 'vision_transformer' in name.lower():
+                vt_params.append(param)
             elif 'feature_perspective' in name.lower():
                 geo_processor_params.append(param)
             else:
                 classifier_params.append(param)
 
         self.optimizer = bnb.optim.AdamW8bit([
-            {'params': clip_params, 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
+            {'params': vt_params, 'lr': lr * 0.4} ,           # Medium-Low LR for VT
             {'params': geo_processor_params, 'lr': lr * 0.5}, # Medium LR for geo reasoning
             {'params': classifier_params, 'lr': lr}           # Highest LR for final classifier
         ], lr=lr, weight_decay=1e-4)
