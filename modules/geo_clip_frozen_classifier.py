@@ -215,7 +215,7 @@ class GeoFrozenClipModel:
     @staticmethod
     def load(filepath):
         checkpoint = torch.load(filepath, map_location=torch.device('cpu'))
-        model = GeoClipModel(lr=float("inf")) # lr will be overwritten by the loaded value
+        model = GeoFrozenClipModel(lr=float("inf")) # lr will be overwritten by the loaded value
         
         model.model.load_state_dict(checkpoint['model_state_dict'])
         model.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

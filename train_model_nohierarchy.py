@@ -13,6 +13,7 @@ from modules.geo_clip_frozen_classifier import GeoFrozenClipModel
 from modules.geo_vt_classifier import GeoVTModel
 
 from itertools import islice
+from functools import partial
 from tqdm import tqdm
 import os
 import gc
@@ -48,10 +49,7 @@ def create_cluster_mapping(centroids_path):
     
     return clusters, lats, lons, avg_dists
 
-# Global variable to store cluster tensors
-CLUSTER_TENSORS = None
-
-def get_batch_logits(batch, boost_value = 10):
+def get_batch_logits(batch, cluster_tensors, boost_value = 10):
     """
     Converts a batch (images, [lat, lon, cluster]) to 
     batch (images, logits), scoring based on distance to cluster centroid
@@ -63,7 +61,7 @@ def get_batch_logits(batch, boost_value = 10):
     batch_lats, batch_lons, batch_clusters = outputs[:, 0], outputs[:, 1], outputs[:, 2]
     
     # Get cluster tensors
-    clusters, lats, lons, avg_dists = CLUSTER_TENSORS
+    clusters, lats, lons, avg_dists = cluster_tensors
 
     # Convert to radians for Haversine formula
     batch_lats_rad = torch.deg2rad(batch_lats)
@@ -93,19 +91,19 @@ def get_batch_logits(batch, boost_value = 10):
     
     return images, logits
 
-def collate_with_logits(batch):
+def collate_with_logits(batch, cluster_tensors):
     """Custom collate function for DataLoaders that applies get_batch_logits transformation"""
     # Default collate to get standard batch format
     images = torch.stack([item[0] for item in batch])
     outputs = torch.tensor([item[1] for item in batch])
     
     # Apply the logits transformation
-    images, logits = get_batch_logits((images, outputs))
+    images, logits = get_batch_logits((images, outputs), cluster_tensors)
     
     return images, logits
 
 # Prepare data
-def prepare_data(coords_file, train_test_split, batch_size, batch_size_test):
+def prepare_data(coords_file, train_test_split, batch_size, batch_size_test, cluster_tensors):
     # Load data
     df = pl.read_csv(coords_file)
     
@@ -134,6 +132,9 @@ def prepare_data(coords_file, train_test_split, batch_size, batch_size_test):
     train_dataset = ImageDataset(image_paths=train_input_values, output_values=train_output_values, size=IMAGE_SIZE)    
     test_dataset  = ImageDataset(image_paths=test_input_values, output_values=test_output_values, size=IMAGE_SIZE)
     
+    # Create partial collate function with cluster_tensors
+    collate_fn = partial(collate_with_logits, cluster_tensors=cluster_tensors)
+    
     # Create data loaders with GPU pinning
     train_loader = DataLoader(
         train_dataset, 
@@ -142,7 +143,7 @@ def prepare_data(coords_file, train_test_split, batch_size, batch_size_test):
         num_workers=4,
         pin_memory=True,
         persistent_workers=True,
-        collate_fn=collate_with_logits
+        collate_fn=collate_fn
     )
     
     test_loader = DataLoader(
@@ -152,7 +153,7 @@ def prepare_data(coords_file, train_test_split, batch_size, batch_size_test):
         num_workers=4,
         pin_memory=True,
         persistent_workers=True,
-        collate_fn=collate_with_logits
+        collate_fn=collate_fn
     )
     
     num_clusters = len(df.select(pl.col("cluster_0")).unique())
@@ -289,16 +290,16 @@ def main():
     
     args = parser.parse_args()
     
-    # Initialize cluster tensors globally
-    global CLUSTER_TENSORS
-    CLUSTER_TENSORS = create_cluster_mapping(args.centroids_file)
+    # Initialize cluster tensors before creating data loaders
+    cluster_tensors = create_cluster_mapping(args.centroids_file)
     
     # Prepare data
     train_loader, test_loader, num_clusters = prepare_data(
         args.coords_file,
         args.train_test_split, 
         args.batch_size, 
-        args.batch_size_test
+        args.batch_size_test,
+        cluster_tensors
     )
     
     # Get transforms from dataset
@@ -338,7 +339,7 @@ def main():
                 batch = [io.to(device, non_blocking=True, dtype=torch.bfloat16) for io in batch]
                 gc.collect()
                 
-                # Train model on batch
+                # 
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16):
                     loss = model.train_batch(batch, transforms=train_transforms)
                 
@@ -354,7 +355,6 @@ def main():
                     model.save(save_path)
                     print(f"\nSaved checkpoint at batch {batch_count}")
                 
-                # Test model at intervals
                 if batch_count % args.test_every == 0:
                     # Split test loader by max test batches for this test iteration
                     test_batches = int(len(test_loader) * args.test_frac)
