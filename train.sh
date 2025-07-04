@@ -1,7 +1,7 @@
 #!/bin/bash
 
 python3 train_model_nohierarchy.py \
-  --batch_size 42 \
+  --batch_size 24 \
   --batch_size_test 24 \
   --max_batches 100000 \
   --save_every 1000 \

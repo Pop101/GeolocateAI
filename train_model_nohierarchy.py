@@ -7,6 +7,7 @@ import torch.optim as optim
 import bitsandbytes as bnb
 import argparse
 import glob
+import logging
 import re
 import os
 import gc
@@ -20,6 +21,11 @@ from modules.visiontranformer_model import VisionTransformerBase
 from modules.geo_clip_liquid_classifier import GeoLiquidClipModel
 from modules.geo_clip_frozen_classifier import GeoFrozenClipModel
 from modules.geo_vt_classifier import GeoVTModel
+
+# Shut down unnecessary logging
+logging.getLogger("deepspeed").setLevel(logging.ERROR)
+logging.getLogger("torch.distributed").setLevel(logging.ERROR)
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Constants
 IMAGE_SIZE = (224, 224)
