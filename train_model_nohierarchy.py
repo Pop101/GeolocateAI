@@ -93,7 +93,7 @@ def get_batch_logits(batch: Tuple[torch.Tensor, torch.Tensor], cluster_tensors: 
 
 def collate_with_logits(batch: list, cluster_tensors: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
     """Collate batch, filtering errors and converting cluster to logits using global cluster_tensors"""
-    valid = [(img, out) for img, out in batch if torch.is_tensor(img) and torch.is_tensor(out)]
+    valid = [(img, out) for img, out in batch if torch.is_tensor(img) and isinstance(out, tuple) and len(out) == 3 and all(isinstance(x, (int, float)) for x in out)]
     images = torch.stack([item[0] for item in valid])
     outputs = torch.tensor([item[1] for item in valid])
     return get_batch_logits((images, outputs), cluster_tensors)
