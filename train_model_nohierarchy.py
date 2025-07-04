@@ -236,7 +236,7 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
     print(f"📊 Model: {args.base_model}_{'frozen' if args.freeze_clip else 'liquid'} | Depth: {args.depth} | Embed: {args.embed_dim} | Hidden: {args.num_hidden_dims} | Heads: {args.heads}")
     print(f"🔄 Current batch: {model.total_batches_trained:,} / {args.max_batches:,}\n")
     
-    pbar = tqdm(desc="Training", unit="batch", initial=model.total_batches_trained)
+    pbar = tqdm(desc="Training", initial=model.total_batches_trained)
     test_loss = test_acc = float("inf")
     
     try:
@@ -250,7 +250,7 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
                     loss = model.train_batch(batch, transforms=train_transforms)
                 
                 pbar.update(1)
-                pbar.set_postfix({"Batch": f"{model.total_batches_trained:,}", "Loss": f"{loss:.4f}", "Test Loss": f"{test_loss:.4f}", "Test Acc": f"{test_acc:.4f}"})
+                pbar.set_postfix({"Loss": f"{loss:.4f}", "Test Loss": f"{test_loss:.4f}", "Test Acc": f"{test_acc:.4f}"})
                 
                 # Periodic checkpointing
                 if args.save_every > 0 and model.total_batches_trained % args.save_every == 0:
