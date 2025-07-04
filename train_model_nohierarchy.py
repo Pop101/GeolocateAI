@@ -2,9 +2,18 @@ import polars as pl
 import numpy as np
 from torch.utils.data import DataLoader
 import torch
+import torch.nn as nn
+import torch.optim as optim
+import bitsandbytes as bnb
 import argparse
 import glob
 import re
+import os
+import gc
+from itertools import islice
+from functools import partial
+from tqdm import tqdm
+from typing import Tuple, Optional, Dict, Any
 
 from modules.image_dataset import ImageDataset
 from modules.visiontranformer_model import VisionTransformerBase
@@ -12,379 +21,266 @@ from modules.geo_clip_liquid_classifier import GeoLiquidClipModel
 from modules.geo_clip_frozen_classifier import GeoFrozenClipModel
 from modules.geo_vt_classifier import GeoVTModel
 
-from itertools import islice
-from functools import partial
-from tqdm import tqdm
-import os
-import gc
+# Constants
+IMAGE_SIZE = (224, 224)
+EARTH_RADIUS_KM = 6371
+BOOST_VALUE = 10
 
-IMAGE_SIZE = (224, 224)  # must be consistent with vt and clip models
-
+# Device and optimization settings
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Enable automatic mixed precision with bfloat16
 torch.set_float32_matmul_precision('high')
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cuda.enable_mem_efficient_sdp(True)
 
-def create_cluster_mapping(centroids_path):
-    """Convert cluster stats to efficient mapping format for fast lookups."""
-    # Convert to dictionary for fast lookups
-    cluster_stats = pl.read_csv(centroids_path).select(
-        pl.col("cluster_0"), pl.col("lat"), pl.col("lon"), pl.col("avg_dist")
-    ).filter(
-        pl.col("cluster_0").is_not_null() & pl.col("cluster_0") >= 0 # remove outlier cluster
-    ).sort(pl.col("cluster_0")) # make sure logits are in order
-    
-    cluster_dict = {}
-    for row in cluster_stats.iter_rows(named=True):
-        cluster_dict[row['cluster_0']] = (row['lat'], row['lon'], row['avg_dist'])
-    
-    # Create PyTorch tensors for batch operations
-    clusters = torch.tensor([k for k in cluster_dict.keys()])
-    lats = torch.tensor([v[0] for v in cluster_dict.values()])
-    lons = torch.tensor([v[1] for v in cluster_dict.values()])
-    avg_dists = torch.tensor([v[2] for v in cluster_dict.values()])
-    
-    return clusters, lats, lons, avg_dists
 
-def get_batch_logits(batch, cluster_tensors, boost_value = 10):
-    """
-    Converts a batch (images, [lat, lon, cluster]) to 
-    batch (images, logits), scoring based on distance to cluster centroid
-    """
+def create_cluster_mapping(centroids_path: str) -> Tuple[torch.Tensor, ...]:
+    """Convert cluster stats to efficient tensor format for fast GPU lookups."""
+    cluster_stats = pl.read_csv(
+        centroids_path
+    ).select(
+        "cluster_0", "lat", "lon", "avg_dist"
+    ).filter(
+        (pl.col("cluster_0").is_not_null()) & (pl.col("cluster_0") >= 0)
+    ).sort("cluster_0")
     
+    # Direct to tensors for GPU efficiency
+    data = cluster_stats.to_numpy()
+    return (torch.tensor(data[:, 0].astype(int)), torch.tensor(data[:, 1]), torch.tensor(data[:, 2]), torch.tensor(data[:, 3]))
+
+
+def get_batch_logits(batch: Tuple[torch.Tensor, torch.Tensor], cluster_tensors: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Convert (images, [lat, lon, cluster]) to (images, logits) using Haversine distance scoring."""
     images, outputs = batch
-    
-    # Outputs is in format [lat, lon, cluster]
     batch_lats, batch_lons, batch_clusters = outputs[:, 0], outputs[:, 1], outputs[:, 2]
-    
-    # Get cluster tensors
     clusters, lats, lons, avg_dists = cluster_tensors
 
-    # Convert to radians for Haversine formula
-    batch_lats_rad = torch.deg2rad(batch_lats)
-    batch_lons_rad = torch.deg2rad(batch_lons)
-    lats_rad = torch.deg2rad(lats)
-    lons_rad = torch.deg2rad(lons)
+    # Haversine distance calculation with broadcasting
+    dlat = torch.deg2rad(batch_lats.unsqueeze(1) - lats.unsqueeze(0))
+    dlon = torch.deg2rad(batch_lons.unsqueeze(1) - lons.unsqueeze(0))
     
-    # Calculate Haversine distance
-    # Using broadcasting for efficient computation
-    dlat = batch_lats_rad.unsqueeze(1) - lats_rad.unsqueeze(0)  # [batch_size, n_clusters]
-    dlon = batch_lons_rad.unsqueeze(1) - lons_rad.unsqueeze(0)  # [batch_size, n_clusters]
+    a = torch.sin(dlat/2)**2 + torch.cos(torch.deg2rad(batch_lats.unsqueeze(1))) * torch.cos(torch.deg2rad(lats.unsqueeze(0))) * torch.sin(dlon/2)**2
+    distances = EARTH_RADIUS_KM * 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))
     
-    # Haversine formula
-    a = torch.sin(dlat/2)**2 + torch.cos(batch_lats_rad.unsqueeze(1)) * torch.cos(lats_rad.unsqueeze(0)) * torch.sin(dlon/2)**2
-    c = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))
-    distances = 6371 * c  # Earth's radius in km * c
+    # Convert to logits via z-scores
+    logits = -distances / avg_dists.unsqueeze(0)
     
-    # Calculate z-scores (distance / avg_dist for each cluster)
-    z_scores = distances / avg_dists.unsqueeze(0)  # [batch_size, n_clusters]
-    
-    # Convert to logits (negative z-scores so lower distances = higher scores)
-    logits = -z_scores
-    
-    # Ensure the correct cluster has the highest logit
-    correct_cluster_mask = (clusters.unsqueeze(0) == batch_clusters.unsqueeze(1))  # [batch_size, n_clusters]
-    logits = torch.where(correct_cluster_mask, logits + boost_value, logits)  # Add small boost to correct clusters
-    
-    return images, logits
+    # Boost correct clusters
+    correct_mask = clusters.unsqueeze(0) == batch_clusters.unsqueeze(1)
+    return images, torch.where(correct_mask, logits + BOOST_VALUE, logits)
 
-def collate_with_logits(batch, cluster_tensors):
-    """Custom collate function for DataLoaders that applies get_batch_logits transformation"""
-    # Default collate to get standard batch format
+
+def collate_with_logits(batch: list, cluster_tensors: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Custom collate function that applies logits transformation."""
     images = torch.stack([item[0] for item in batch])
     outputs = torch.tensor([item[1] for item in batch])
-    
-    # Apply the logits transformation
-    images, logits = get_batch_logits((images, outputs), cluster_tensors)
-    
-    return images, logits
+    return get_batch_logits((images, outputs), cluster_tensors)
 
-# Prepare data
-def prepare_data(coords_file, train_test_split, batch_size, batch_size_test, cluster_tensors):
-    # Load data
+
+def prepare_data(coords_file: str, train_test_split: float, batch_size: int, batch_size_test: int, cluster_tensors: Tuple[torch.Tensor, ...]) -> Tuple[DataLoader, DataLoader, int]:
+    """Prepare train and test data loaders with efficient GPU settings."""
     df = pl.read_csv(coords_file)
-    
-    # Extract directory from coords file path
     data_dir = os.path.dirname(coords_file)
     
-    # Add random column for splitting
-    np.random.seed(42)  # For reproducibility
-    df = df.with_columns(pl.lit(np.random.rand(df.shape[0])).alias("random")).filter(
-        pl.col("cluster_0").is_not_null() & pl.col("cluster_0") >= 0 # remove outlier cluster
-    ).with_columns(
-        (pl.lit(data_dir + '/') + pl.col('path')).alias('path')  # Add path prefix
+    # Perform test / train split, filtering out noise clusters
+    np.random.seed(42)
+    df = df.with_columns([
+        pl.lit(np.random.rand(df.shape[0])).alias("random"),
+        (pl.lit(f"{data_dir}/") + pl.col('path')).alias('path')
+    ]).filter(
+        (pl.col("cluster_0").is_not_null()) & (pl.col("cluster_0") >= 0)
     )
     
-    # Split based on random value
     train_df = df.filter(pl.col("random") <= train_test_split).drop("random")
-    test_df  = df.filter(pl.col("random") > train_test_split).drop("random")
+    test_df = df.filter(pl.col("random") > train_test_split).drop("random")
     
-    train_input_values = train_df.select(pl.col("path")).to_series().to_list()
-    test_input_values  = test_df.select(pl.col("path")).to_series().to_list()
-
-    train_output_values = train_df.select(pl.col("lat"), pl.col("lon"), pl.col("cluster_0")).rows()
-    test_output_values  = test_df.select(pl.col("lat"), pl.col("lon"), pl.col("cluster_0")).rows()
-
     # Create datasets
-    train_dataset = ImageDataset(image_paths=train_input_values, output_values=train_output_values, size=IMAGE_SIZE)    
-    test_dataset  = ImageDataset(image_paths=test_input_values, output_values=test_output_values, size=IMAGE_SIZE)
+    train_dataset = ImageDataset(train_df["path"].to_list(), train_df.select("lat", "lon", "cluster_0").rows(), IMAGE_SIZE)
+    test_dataset = ImageDataset(test_df["path"].to_list(), test_df.select("lat", "lon", "cluster_0").rows(), IMAGE_SIZE)
     
-    # Create partial collate function with cluster_tensors
-    collate_fn = partial(collate_with_logits, cluster_tensors=cluster_tensors)
-    
-    # Create data loaders with GPU pinning
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=batch_size, 
-        shuffle=True, 
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=True,
-        collate_fn=collate_fn
+    # Set up DataLoader with efficient GPU settings
+    loader_kwargs = {"num_workers": 4, "pin_memory": True, "persistent_workers": True, "collate_fn": partial(collate_with_logits, cluster_tensors=cluster_tensors)}
+    return (
+        DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **loader_kwargs),     # Train DataLoader
+        DataLoader(test_dataset, batch_size=batch_size_test, shuffle=True, **loader_kwargs), # Test DataLoader
+        df["cluster_0"].n_unique()                                                           # Number of clusters
     )
-    
-    test_loader = DataLoader(
-        test_dataset, 
-        batch_size=batch_size_test, 
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=True,
-        collate_fn=collate_fn
-    )
-    
-    num_clusters = len(df.select(pl.col("cluster_0")).unique())
-    
-    return train_loader, test_loader, num_clusters
 
-def create_model(args, num_clusters):
-    """Create model based on arguments"""
-    model_params = {
-        'lr': args.learning_rate,
-        'num_classes': num_clusters,
-        'num_head_dims': args.embed_dim,
-        'num_hidden_dims': args.num_hidden_dims,
-        'heads': args.heads,
-        'depth': args.depth,
-        'device': device,
-        'dtype': torch.bfloat16
-    }
+
+def create_model(args: argparse.Namespace, num_clusters: int) -> Any:
+    """Create model with specified architecture and parameters."""
+    base_params = {"lr": args.learning_rate, "num_classes": num_clusters, "num_head_dims": args.embed_dim, "num_hidden_dims": args.num_hidden_dims, "heads": args.heads, "depth": args.depth, "device": device, "dtype": torch.bfloat16}
     
     if args.base_model == "clip":
-        model_params['clip_model_name'] = args.clip_model_name
-        model = GeoFrozenClipModel(**model_params) if args.freeze_clip else GeoLiquidClipModel(**model_params)
-    else:  # vt
-        try:
-            model_params['vt_base'] = VisionTransformerBase[args.vt_base]
-        except KeyError:
-            raise ValueError(f"Invalid Vision Transformer base model: {args.vt_base}")
-        
-        model = GeoVTModel(**model_params)
+        base_params["clip_model_name"] = args.clip_model_name
+        return GeoFrozenClipModel(**base_params) if args.freeze_clip else GeoLiquidClipModel(**base_params)
     
-    return model
+    base_params["vt_base"] = VisionTransformerBase[args.vt_base]
+    return GeoVTModel(**base_params)
 
-def get_model_filename(base_model, frozen, batch_count=None, training=False):
-    """Generate model filename based on architecture and batch count"""
-    frozen_str = "frozen" if frozen else "liquid"
-    base_name = f"{base_model}_{frozen_str}_model"
-    
+
+def get_model_filename(base_model: str, frozen: bool, batch_count: Optional[int] = None, training: bool = False) -> str:
+    """Generate standardized model filename."""
+    base = f"{base_model}_{'frozen' if frozen else 'liquid'}_model"
     if training:
-        return f"{base_name}_training.pth"
-    elif batch_count is not None:
-        return f"{base_name}_batch_{batch_count}.pth"
-    else:
-        return f"{base_name}_final.pth"
+        return f"{base}_training.pth"
+    return f"{base}_batch_{batch_count}.pth" if batch_count else f"{base}_final.pth"
 
-def find_latest_model(save_dir, base_model, frozen):
-    """Find the latest model checkpoint based on batch count"""
-    # First check for training checkpoint (highest priority)
+
+def find_latest_model(save_dir: str, base_model: str, frozen: bool) -> Tuple[Optional[str], int]:
+    """Find the latest model checkpoint based on batch count."""
+    # Check for training checkpoint first
     training_path = os.path.join(save_dir, get_model_filename(base_model, frozen, training=True))
     if os.path.exists(training_path):
-        return training_path, 0  # We don't know the batch count from training files
+        return training_path, 0
     
-    # Then look for batch checkpoints
+    # Find numbered checkpoints
     pattern = os.path.join(save_dir, get_model_filename(base_model, frozen, batch_count="*").replace("*", "[0-9]*"))
-    model_files = glob.glob(pattern)
-    
-    if not model_files:
-        return None, 0
-    
-    # Extract batch counts and find max
-    batch_files = []
-    for f in model_files:
-        match = re.search(r'batch_(\d+)\.pth', f)
-        if match:
-            batch_files.append((int(match.group(1)), f))
+    batch_files = [(int(m.group(1)), f) for f in glob.glob(pattern) if (m := re.search(r'batch_(\d+)\.pth', f))]
     
     if not batch_files:
         return None, 0
     
-    # Get file with highest batch count
-    max_batch, latest_file = max(batch_files, key=lambda x: x[0])
+    max_batch, latest_file = max(batch_files)
     return latest_file, max_batch
 
-def load_model_checkpoint(args, num_clusters):
-    """Load existing model checkpoint or create new model"""
+
+def load_model_checkpoint(args: argparse.Namespace, num_clusters: int) -> Any:
+    """Load existing checkpoint or create new model."""
     if args.retrain:
         print("--retrain flag set. Starting fresh training.")
-        return create_model(args, num_clusters), 0
+        return create_model(args, num_clusters)
     
-    # Try to find and load existing model
-    latest_path, start_batch = find_latest_model(args.save_dir, args.base_model, args.freeze_clip)
+    latest_path, _ = find_latest_model(args.save_dir, args.base_model, args.freeze_clip)
     
     if latest_path and os.path.exists(latest_path):
-        print(f"Model found at {latest_path}, resuming training" + (f" from batch {start_batch}" if start_batch > 0 else ""))
-        
-        # Load the appropriate model class
-        model_classes = {
-            ('clip', True): GeoFrozenClipModel,
-            ('clip', False): GeoLiquidClipModel,
-            ('vt', False): GeoVTModel,
-            ('vt', True): GeoVTModel
-        }
-        
-        model_class = model_classes[(args.base_model, args.freeze_clip)]
-        return model_class.load(latest_path), start_batch
+        model_class = {('clip', True): GeoFrozenClipModel, ('clip', False): GeoLiquidClipModel, ('vt', False): GeoVTModel, ('vt', True): GeoVTModel}[(args.base_model, args.freeze_clip)]
+        model = model_class.load(latest_path)
+        print(f"Loaded model from {latest_path}, resuming from batch {model.total_batches_trained}")
+        return model
     
-    print("No model found. Starting fresh training.")
-    return create_model(args, num_clusters), 0
+    print("No checkpoint found. Starting fresh training.")
+    return create_model(args, num_clusters)
 
-# Main function
-def main():
-    parser = argparse.ArgumentParser(description='Train geolocation models')
+
+def parse_arguments() -> argparse.Namespace:
+    """Parse command line arguments with sensible defaults."""
+    parser = argparse.ArgumentParser(description='Train geolocation models with style')
     
     # Data parameters
-    parser.add_argument('--centroids_file', type=str, default='dev/data/hierarchical_cluster_centroids.csv', 
-                        help='Path to centroids CSV file')
-    parser.add_argument('--coords_file', type=str, default='dev/data/hierarchical_clustered_coords.csv', 
-                        help='Path to coordinates CSV file')
+    parser.add_argument('--centroids_file', type=str, default='dev/data/hierarchical_cluster_centroids.csv')
+    parser.add_argument('--coords_file', type=str, default='dev/data/hierarchical_clustered_coords.csv')
     
     # Training parameters
-    parser.add_argument('--train_test_split', type=float, default=0.85, help='Train/test split ratio')
-    parser.add_argument('--batch_size', type=int, default=12, help='Training batch size')
-    parser.add_argument('--batch_size_test', type=int, default=24, help='Test batch size')
-    parser.add_argument('--test_every', type=int, default=1000, help='Test every N batches')
-    parser.add_argument('--test_frac', type=float, default=0.015, help='Fraction of test set to use each test')
-    parser.add_argument('--max_batches', type=int, default=100000, help='Maximum number of batches to train')
-    parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate')
-    parser.add_argument('--save_every', type=int, default=-1, help='Save model every N batches (-1 for default behavior)')
-    parser.add_argument('--save_dir', type=str, default='models', help='Directory to save models')
-    parser.add_argument('--retrain', action='store_true', help='Start training from scratch, ignore existing models')
+    parser.add_argument('--train_test_split', type=float, default=0.85)
+    parser.add_argument('--batch_size', type=int, default=12)
+    parser.add_argument('--batch_size_test', type=int, default=24)
+    parser.add_argument('--test_every', type=int, default=1000)
+    parser.add_argument('--test_frac', type=float, default=0.015)
+    parser.add_argument('--max_batches', type=int, default=100000)
+    parser.add_argument('--learning_rate', type=float, default=0.001)
+    parser.add_argument('--save_every', type=int, default=-1, help='Save model every N batches (-1 for test intervals only)')
+    parser.add_argument('--save_batch_name', action='store_true', help='Save periodic checkpoints with batch number in name instead of _training suffix (default)')
+    parser.add_argument('--save_dir', type=str, default='models')
+    parser.add_argument('--retrain', action='store_true', help='Start fresh, ignore existing checkpoints')
     
-    # Model architecture parameters
-    parser.add_argument('--base_model', type=str, default='clip', 
-                        choices=['clip', 'vt'],
-                        help='Base model type')
-    parser.add_argument('--depth', type=int, default=8, help='Depth of the model')
-    parser.add_argument('--embed_dim', type=int, default=2048, help='Embedding dimension (projection from base model)')
-    parser.add_argument('--num_hidden_dims', type=int, default=8192, help='Hidden dimension size')
-    parser.add_argument('--heads', type=int, default=32, help='Number of attention heads')
-    parser.add_argument('--freeze_clip', action='store_true', help='Freeze CLIP backbone (use frozen instead of liquid)')
+    # Model architecture
+    parser.add_argument('--base_model', type=str, default='clip', choices=['clip', 'vt'])
+    parser.add_argument('--depth', type=int, default=8)
+    parser.add_argument('--embed_dim', type=int, default=2048)
+    parser.add_argument('--num_hidden_dims', type=int, default=8192)
+    parser.add_argument('--heads', type=int, default=32)
+    parser.add_argument('--freeze_clip', action='store_true', help='Freeze CLIP backbone')
     
-    # Model-specific parameters
-    parser.add_argument('--clip_model_name', type=str, default='openai/clip-vit-large-patch14', help='CLIP model name')
-    parser.add_argument('--vt_base', type=str, default='VIT_B_32', help='Vision Transformer base (for vt model)')
+    # Model-specific
+    parser.add_argument('--clip_model_name', type=str, default='openai/clip-vit-large-patch14')
+    parser.add_argument('--vt_base', type=str, default='VIT_B_32')
     
-    args = parser.parse_args()
-    
-    # Initialize cluster tensors before creating data loaders
-    cluster_tensors = create_cluster_mapping(args.centroids_file)
-    
-    # Prepare data
-    train_loader, test_loader, num_clusters = prepare_data(
-        args.coords_file,
-        args.train_test_split, 
-        args.batch_size, 
-        args.batch_size_test,
-        cluster_tensors
-    )
-    
-    # Get transforms from dataset
-    train_transforms = ImageDataset.get_transforms(train=True)
-    test_transforms  = ImageDataset.get_transforms(train=False)
-    
-    print(f"Initializing model... ({num_clusters} clusters)")
-    
-    # Load model checkpoint or create new
-    model, start_batch = load_model_checkpoint(args, num_clusters)
-    model.send_to_device(device, dtype=torch.bfloat16)  # Use bfloat16 for training    
-    
-    # Prep filesystem
+    return parser.parse_args()
+
+
+def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, args: argparse.Namespace) -> None:
+    """Main training loop with periodic evaluation and checkpointing."""
     os.makedirs(args.save_dir, exist_ok=True)
     losses_file = os.path.join(args.save_dir, "losses.csv")
     
-    # Create or append to losses file
-    if start_batch == 0:
+    if model.total_batches_trained == 0:
         with open(losses_file, "w") as f:
             f.write("batch_count,lr,loss,test_loss,test_acc\n")
     
-    model_type = f"{args.base_model}_{'frozen' if args.freeze_clip else 'liquid'}"
-    print(f"Starting training...")
-    print(f"Training on {len(train_loader.dataset)} images")
-    print(f"Model: {model_type}, Depth: {args.depth}, Embed dim: {args.embed_dim}, Hidden dims: {args.num_hidden_dims}, Heads: {args.heads}")
-    if start_batch > 0:
-        print(f"Resuming from batch {start_batch}")
+    train_transforms = ImageDataset.get_transforms(train=True)
+    test_transforms = ImageDataset.get_transforms(train=False)
+    
+    print(f"\n🚀 Starting training on {len(train_loader.dataset):,} images")
+    print(f"📊 Model: {args.base_model}_{'frozen' if args.freeze_clip else 'liquid'} | Depth: {args.depth} | Embed: {args.embed_dim} | Hidden: {args.num_hidden_dims} | Heads: {args.heads}")
+    print(f"🔄 Current batch: {model.total_batches_trained:,} / {args.max_batches:,}\n")
+    
+    pbar = tqdm(desc="Training", unit="batch", initial=model.total_batches_trained)
+    test_loss = test_acc = float("inf")
     
     try:
-        pbar = tqdm(desc="Training", unit="batch", initial=start_batch)
-        test_loss, test_acc = float("inf"), float("inf")
-        batch_count = start_batch
-        
-        while batch_count < args.max_batches:
+        while model.total_batches_trained < args.max_batches:
             for batch in train_loader:
-                # Move batch to GPU and convert to bfloat16
-                batch = [io.to(device, non_blocking=True, dtype=torch.bfloat16) for io in batch]
+                # Efficient GPU transfer
+                batch = [b.to(device, non_blocking=True, dtype=torch.bfloat16) for b in batch]
                 gc.collect()
                 
-                # 
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16):
                     loss = model.train_batch(batch, transforms=train_transforms)
                 
-                batch_count += 1
                 pbar.update(1)
+                pbar.set_postfix({"Batch": f"{model.total_batches_trained:,}", "Loss": f"{loss:.4f}", "Test Loss": f"{test_loss:.4f}", "Test Acc": f"{test_acc:.4f}"})
                 
-                pbar.set_postfix({"Loss": f"{loss:.4f}", "Test Loss": f"{test_loss:.4f}", "Test Acc": f"{test_acc:.4f}"})
+                # Periodic checkpointing
+                if args.save_every > 0 and model.total_batches_trained % args.save_every == 0:
+                    filename = get_model_filename(args.base_model, args.freeze_clip, model.total_batches_trained if args.save_batch_name else None, training=not args.save_batch_name)
+                    model.save(os.path.join(args.save_dir, filename))
+                    print(f"\n💾 Saved checkpoint: {filename}")
                 
-                # Save model at intervals if specified
-                if args.save_every > 0 and batch_count % args.save_every == 0:
-                    save_path = os.path.join(args.save_dir, 
-                                           get_model_filename(args.base_model, args.freeze_clip, batch_count))
-                    model.save(save_path)
-                    print(f"\nSaved checkpoint at batch {batch_count}")
-                
-                if batch_count % args.test_every == 0:
-                    # Split test loader by max test batches for this test iteration
+                # Periodic evaluation
+                if model.total_batches_trained % args.test_every == 0:
                     test_batches = int(len(test_loader) * args.test_frac)
-                    test_subset = islice(test_loader, test_batches)
-                    
-                    # Run test
-                    test_loss, test_acc = model.evaluate(tqdm(test_subset, desc="Testing", unit="batch", total=test_batches), transforms=test_transforms)
+                    test_loss, test_acc = model.evaluate(tqdm(islice(test_loader, test_batches), desc="Evaluating", total=test_batches), transforms=test_transforms)
                     model.update_scheduler(test_loss)
+                    
                     with open(losses_file, "a") as f:
-                        f.write(f"{batch_count},{model.get_current_lr()},{loss},{test_loss},{test_acc}\n")
+                        f.write(f"{model.total_batches_trained},{model.get_current_lr()},{loss},{test_loss},{test_acc}\n")
                     
-                    # Save training checkpoint when save_every is negative
-                    if args.save_every < 0:
-                        save_path = os.path.join(args.save_dir, get_model_filename(args.base_model, args.freeze_clip, training=True))
-                        model.save(save_path)
+                    if args.save_every < 0:  # Default behavior: save on test
+                        model.save(os.path.join(args.save_dir, get_model_filename(args.base_model, args.freeze_clip, training=True)))
                     
-                    print('\n')
-                    
-                if batch_count >= args.max_batches:
+                    print(f"\n📈 Batch {model.total_batches_trained:,}: Loss={loss:.4f}, Test Loss={test_loss:.4f}, Test Acc={test_acc:.4f}, LR={model.get_current_lr():.2e}\n")
+                
+                if model.total_batches_trained >= args.max_batches:
                     break
                     
     except KeyboardInterrupt:
-        print("Training interrupted. Saving final model...")
+        print("\n\n⚠️  Training interrupted by user")
     finally:
         pbar.close()
         final_path = os.path.join(args.save_dir, get_model_filename(args.base_model, args.freeze_clip))
         model.save(final_path)
-        print(f"Final model saved to {final_path}")
+        print(f"\n✅ Training complete! Final model saved to {final_path}")
+        print(f"📊 Total batches trained: {model.total_batches_trained:,}")
+
+
+def main():
+    """Main entry point with complete training pipeline."""
+    args = parse_arguments()
     
-    print("Training complete.")
+    # Initialize data pipeline
+    cluster_tensors = create_cluster_mapping(args.centroids_file)
+    train_loader, test_loader, num_clusters = prepare_data(args.coords_file, args.train_test_split, args.batch_size, args.batch_size_test, cluster_tensors)
     
+    print(f"\n🌍 Initializing geolocation model with {num_clusters} clusters...")
+    
+    # Load or create model
+    model = load_model_checkpoint(args, num_clusters)
+    model.send_to_device(device, dtype=torch.bfloat16)
+    
+    # Train the model
+    train_model(model, train_loader, test_loader, args)
+
+
 if __name__ == "__main__":
     main()

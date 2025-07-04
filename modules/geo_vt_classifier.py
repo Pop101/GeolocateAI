@@ -70,6 +70,18 @@ class GeoVTModel:
         # Use device parameter if provided
         if device is not None or dtype is not None:
             self.send_to_device(device, dtype)
+            
+        # Save init params for future use
+        self.total_batches_trained = 0
+        self.init_params = {
+            'lr': lr,
+            'num_classes': num_classes,
+            'num_head_dims': num_head_dims,
+            'num_hidden_dims': num_hidden_dims,
+            'heads': heads,
+            'depth': depth,
+            'vt_base': vt_base,
+        }  
     
     def train_batch(self, batch, transforms=None, accumulation_steps=3):
         self.model.train()
@@ -108,6 +120,7 @@ class GeoVTModel:
         self.optimizer.step()
         self.optimizer.zero_grad()
         
+        self.total_batches_trained += 1
         return accumulated_loss
     
     def update_scheduler(self, val_loss):
@@ -209,15 +222,23 @@ class GeoVTModel:
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
+            'init_params': self.init_params,
+            'total_batches_trained': self.total_batches_trained
         }, filepath)
     
     @staticmethod
     def load(filepath):
         checkpoint = torch.load(filepath, map_location=torch.device('cpu'))
-        model = GeoVTModel(lr=float("inf")) # lr will be overwritten by the loaded value
         
+        # Create model with saved init params
+        model = GeoVTModel(**checkpoint['init_params'])
+        
+        # Load states
         model.model.load_state_dict(checkpoint['model_state_dict'])
         model.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         model.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # Restore training progress
+        model.total_batches_trained = checkpoint['total_batches_trained']
         
         return model
