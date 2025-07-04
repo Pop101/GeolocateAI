@@ -10,7 +10,7 @@ class ClipOutput(Enum):
     """Enum for the output type of the CLIP model"""
     POOLER_OUTPUT = "pooler_output"
     LAST_HIDDEN_STATE = "last_hidden_state"
-    
+torch.serialization.safe_globals([ClipOutput])    
     
 class ClipBaseModel(nn.Module):
     """Wrapper for CLIP vision model to use in a sequential model"""

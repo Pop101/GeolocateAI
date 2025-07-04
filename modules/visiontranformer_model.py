@@ -12,6 +12,7 @@ class VisionTransformerBase(Enum):
     VIT_B_32 = vit_b_32, ViT_B_32_Weights.DEFAULT
     VIT_L_16 = vit_l_16, ViT_L_16_Weights.DEFAULT
     VIT_L_32 = vit_l_32, ViT_L_32_Weights.DEFAULT
+torch.serialization.safe_globals([VisionTransformerBase])
     
 class VisionTransformerModel(nn.Module):
     """Vision Transformer base model for image classification"""
