@@ -1,3 +1,16 @@
+import os
+import logging
+import warnings
+
+# Suppress all warnings
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["DATASETS_VERBOSITY"] = "error"
+warnings.filterwarnings("ignore")
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger().setLevel(logging.WARNING)
+
+# Now do the actual imports
 import polars as pl
 import numpy as np
 from torch.utils.data import DataLoader
@@ -7,14 +20,16 @@ import torch.optim as optim
 import bitsandbytes as bnb
 import argparse
 import glob
-import logging
 import re
-import os
 import gc
 from itertools import islice
 from functools import partial
 from tqdm import tqdm
 from typing import Tuple, Optional, Dict, Any
+
+# Suppress new loggers
+for logger_name in logging.root.manager.loggerDict:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 from modules.image_dataset import ImageDataset
 from modules.visiontranformer_model import VisionTransformerBase
