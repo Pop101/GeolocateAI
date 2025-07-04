@@ -150,12 +150,17 @@ def get_model_filename(base_model: str, frozen: bool, batch_count: Optional[int]
 
 def find_latest_model(save_dir: str, base_model: str, frozen: bool) -> Tuple[Optional[str], int]:
     """Find the latest model checkpoint based on batch count."""
-    # Check for training checkpoint first
+    # Check for final checkpoint first
+    final_path = os.path.join(save_dir, get_model_filename(base_model, frozen))
+    if os.path.exists(final_path):
+        return final_path, 0
+    
+    # Check for training checkpoint next
     training_path = os.path.join(save_dir, get_model_filename(base_model, frozen, training=True))
     if os.path.exists(training_path):
         return training_path, 0
     
-    # Find numbered checkpoints
+    # Find numbered checkpoints last
     pattern = os.path.join(save_dir, get_model_filename(base_model, frozen, batch_count="*").replace("*", "[0-9]*"))
     batch_files = [(int(m.group(1)), f) for f in glob.glob(pattern) if (m := re.search(r'batch_(\d+)\.pth', f))]
     
