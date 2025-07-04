@@ -298,7 +298,7 @@ def main():
     cluster_tensors = create_cluster_mapping(args.centroids_file)
     train_loader, test_loader, num_clusters = prepare_data(args.coords_file, args.train_test_split, args.batch_size, args.batch_size_test, cluster_tensors)
     
-    print(f"\n🌍 Initializing geolocation model with {num_clusters} clusters...")
+    print(f"\n🌍 Initializing geolocation model with {num_clusters:,} clusters...")
     
     # Load or create model
     model = load_model_checkpoint(args, num_clusters)
