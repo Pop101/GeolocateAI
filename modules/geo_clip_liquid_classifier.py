@@ -17,7 +17,7 @@ class GeoLiquidClipModel:
         self.dtype = dtype
         
         # Initialize model layers
-        clip_model = ClipBaseModel(clip_model_name, output_type, enable_checkpointing=True)
+        clip_model = ClipBaseModel(clip_model_name, output_type, enable_checkpointing=enable_checkpointing)
         
         # Create a single sequential model
         seq = CheckpointedSequential if enable_checkpointing else nn.Sequential

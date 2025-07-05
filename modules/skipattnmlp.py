@@ -32,6 +32,7 @@ class SkipAttentionMLP(nn.Module):
         
         # Dropout values for each layer
         dropout_values = np.linspace(dropout_start, dropout_end, depth)
+        dropout_values = [float(val) for val in dropout_values]
         
         # Create main processing blocks
         self.blocks = nn.ModuleList()
