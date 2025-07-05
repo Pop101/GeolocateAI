@@ -78,7 +78,7 @@ def create_cluster_mapping(centroids_path: str) -> Tuple[torch.Tensor, ...]:
     )
 
 
-def get_batch_logits(batch: Tuple[torch.Tensor, torch.Tensor], cluster_tensors: Tuple[torch.Tensor, ...], temperature: float = 10) -> Tuple[torch.Tensor, torch.Tensor]:
+def get_batch_logits(batch: Tuple[torch.Tensor, torch.Tensor], cluster_tensors: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
     """Convert (images, [lat, lon, cluster]) to (images, target_distributions) using Haversine distance scoring."""
     images, outputs = batch
     batch_lats, batch_lons, batch_clusters = outputs[:, 0], outputs[:, 1], outputs[:, 2]
@@ -133,7 +133,7 @@ def prepare_data(coords_file: str, train_test_split: float, batch_size: int, bat
     test_dataset = ImageDataset(test_df["path"].to_list(), test_df.select("lat", "lon", "cluster_0").rows(), IMAGE_SIZE)
     
     # Set up DataLoader with efficient GPU settings
-    loader_kwargs = {"num_workers": 6, "pin_memory": True, "persistent_workers": True, "non_blocking": True, "prefetch_factor": 3, "collate_fn": partial(collate_with_logits, cluster_tensors=cluster_tensors)}
+    loader_kwargs = {"num_workers": 6, "pin_memory": True, "persistent_workers": True, "prefetch_factor": 3, "collate_fn": partial(collate_with_logits, cluster_tensors=cluster_tensors)}
     return (
         DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **loader_kwargs),     # Train DataLoader
         DataLoader(test_dataset, batch_size=batch_size_test, shuffle=True, **loader_kwargs), # Test DataLoader
@@ -244,7 +244,8 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
     os.makedirs(args.save_dir, exist_ok=True)
     losses_file = os.path.join(args.save_dir, "losses.csv")
     
-    if model.total_batches_trained == 0:
+    # If restarting training, replace the losses file
+    if model.total_batches_trained == 0 or not os.path.exists(losses_file):
         with open(losses_file, "w") as f:
             f.write("batch_count,lr,loss,test_loss,test_acc\n")
     
