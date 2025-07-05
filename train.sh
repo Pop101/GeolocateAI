@@ -1,7 +1,7 @@
 #!/bin/bash
 
 EMAIL="$1"
-LOGFILE="/tmp/training_$(date +%Y%m%d_%H%M%S).log"
+LOGFILE="./logs/training_$(date +%Y%m%d_%H%M%S).log"
 
 {
     echo "Training started at $(date)"
@@ -28,7 +28,6 @@ LOGFILE="/tmp/training_$(date +%Y%m%d_%H%M%S).log"
 # Email the results if sendmail exists and email provided
 if [[ -n "$EMAIL" ]] && command -v sendmail >/dev/null 2>&1; then
     echo "Training completed - $(date)" | sendmail "$EMAIL" < "$LOGFILE"
+elif [[ -n "$EMAIL" ]] && command -v msmtp >/dev/null 2>&1; then
+    echo "Training completed - $(date)" | msmtp "$EMAIL" < "$LOGFILE"
 fi
-
-# Clean up
-rm "$LOGFILE"
