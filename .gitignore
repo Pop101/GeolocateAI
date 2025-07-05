@@ -10,3 +10,4 @@ dev/**
 dev/data/__unneeded_code.py
 
 .ssh
+models/

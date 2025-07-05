@@ -7,6 +7,7 @@ from modules.clip_model import ClipBaseModel, ClipOutput
 from modules.skipattnmlp import SkipAttentionMLP
 from modules.feature_perspective import FeaturePerspective
 from modules.checkpointedsequential import CheckpointedSequential
+from modules.kldivlosssoftmax import KLDivLossWithSoftmax
 
 import warnings
 
@@ -38,7 +39,7 @@ class GeoFrozenClipModel:
         )
         
         # Initialize criterion and optimizer
-        self.criterion = nn.MSELoss()
+        self.criterion = KLDivLossWithSoftmax()
         
         # Optimizer with different learning rates for different components
         clip_params = []
@@ -218,6 +219,13 @@ class GeoFrozenClipModel:
         self.criterion = self.criterion.to(device)
         self.device = device
         self.dtype = dtype
+        
+    def compile(self, mode: str = 'default', fullgraph: bool = False, dynamic: bool = False, backend: str = 'inductor'):
+        """Compiles the model for optimized inference."""
+        if mode == 'default':
+            self.model = torch.compile(self.model, fullgraph=fullgraph, dynamic=dynamic, backend=backend)
+        else:
+            raise ValueError(f"Unsupported compilation mode: {mode}")
     
     def save(self, filepath):
         torch.save({

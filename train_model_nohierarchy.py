@@ -16,6 +16,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import bitsandbytes as bnb
 import argparse
@@ -45,13 +46,15 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # Constants
 IMAGE_SIZE = (224, 224)
 EARTH_RADIUS_KM = 6371
-BOOST_VALUE = 10
+BOOST_VALUE = 2.0
 
 # Device and optimization settings
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_float32_matmul_precision('high')
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.deterministic = False
 torch.backends.cuda.enable_mem_efficient_sdp(True)
 
 
@@ -67,15 +70,20 @@ def create_cluster_mapping(centroids_path: str) -> Tuple[torch.Tensor, ...]:
     
     # Direct to tensors for GPU efficiency
     data = cluster_stats.to_numpy()
-    return (torch.tensor(data[:, 0].astype(int)), torch.tensor(data[:, 1]), torch.tensor(data[:, 2]), torch.tensor(data[:, 3]))
+    return (
+        torch.tensor(data[:, 0].astype(int)),
+        torch.tensor(data[:, 1]),
+        torch.tensor(data[:, 2]),
+        torch.tensor(data[:, 3])
+    )
 
 
-def get_batch_logits(batch: Tuple[torch.Tensor, torch.Tensor], cluster_tensors: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Convert (images, [lat, lon, cluster]) to (images, logits) using Haversine distance scoring."""
+def get_batch_logits(batch: Tuple[torch.Tensor, torch.Tensor], cluster_tensors: Tuple[torch.Tensor, ...], temperature: float = 10) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Convert (images, [lat, lon, cluster]) to (images, target_distributions) using Haversine distance scoring."""
     images, outputs = batch
     batch_lats, batch_lons, batch_clusters = outputs[:, 0], outputs[:, 1], outputs[:, 2]
     clusters, lats, lons, avg_dists = cluster_tensors
-
+    
     # Haversine distance calculation with broadcasting
     dlat = torch.deg2rad(batch_lats.unsqueeze(1) - lats.unsqueeze(0))
     dlon = torch.deg2rad(batch_lons.unsqueeze(1) - lons.unsqueeze(0))
@@ -83,12 +91,16 @@ def get_batch_logits(batch: Tuple[torch.Tensor, torch.Tensor], cluster_tensors: 
     a = torch.sin(dlat/2)**2 + torch.cos(torch.deg2rad(batch_lats.unsqueeze(1))) * torch.cos(torch.deg2rad(lats.unsqueeze(0))) * torch.sin(dlon/2)**2
     distances = EARTH_RADIUS_KM * 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))
     
-    # Convert to logits via z-scores
-    logits = -distances / avg_dists.unsqueeze(0)
+    # Create scores (higher for closer distances)
+    scores = -torch.log1p(distances / avg_dists.unsqueeze(0))
     
-    # Boost correct clusters
+    # Boost correct cluster
     correct_mask = clusters.unsqueeze(0) == batch_clusters.unsqueeze(1)
-    return images, torch.where(correct_mask, logits + BOOST_VALUE, logits)
+    scores = torch.where(correct_mask, scores * BOOST_VALUE, scores)
+    
+    # Logits to distribution
+    target_distributions = F.softmax(scores, dim=1)
+    return images, target_distributions
 
 
 def collate_with_logits(batch: list, cluster_tensors: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -121,7 +133,7 @@ def prepare_data(coords_file: str, train_test_split: float, batch_size: int, bat
     test_dataset = ImageDataset(test_df["path"].to_list(), test_df.select("lat", "lon", "cluster_0").rows(), IMAGE_SIZE)
     
     # Set up DataLoader with efficient GPU settings
-    loader_kwargs = {"num_workers": 4, "pin_memory": True, "persistent_workers": True, "collate_fn": partial(collate_with_logits, cluster_tensors=cluster_tensors)}
+    loader_kwargs = {"num_workers": 6, "pin_memory": True, "persistent_workers": True, "non_blocking": True, "prefetch_factor": 3, "collate_fn": partial(collate_with_logits, cluster_tensors=cluster_tensors)}
     return (
         DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **loader_kwargs),     # Train DataLoader
         DataLoader(test_dataset, batch_size=batch_size_test, shuffle=True, **loader_kwargs), # Test DataLoader
@@ -205,7 +217,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--test_every', type=int, default=1000)
     parser.add_argument('--test_frac', type=float, default=0.015)
     parser.add_argument('--max_batches', type=int, default=100000)
-    parser.add_argument('--learning_rate', type=float, default=0.001)
+    parser.add_argument('--learning_rate', type=float, default=0.002)
     parser.add_argument('--save_every', type=int, default=-1, help='Save model every N batches (-1 for test intervals only)')
     parser.add_argument('--save_batch_name', action='store_true', help='Save periodic checkpoints with batch number in name instead of _training suffix (default)')
     parser.add_argument('--save_dir', type=str, default='models')
@@ -218,6 +230,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--num_hidden_dims', type=int, default=8192)
     parser.add_argument('--heads', type=int, default=32)
     parser.add_argument('--freeze_clip', action='store_true', help='Freeze CLIP backbone')
+    parser.add_argument('--compile', action='store_true', help='Compile model with TorchScript for performance')
     
     # Model-specific
     parser.add_argument('--clip_model_name', type=str, default='openai/clip-vit-large-patch14')
@@ -304,7 +317,14 @@ def main():
     # Load or create model
     model = load_model_checkpoint(args, num_clusters)
     model.send_to_device(device, dtype=torch.bfloat16)
-    
+    if args.compile:
+        model.compile(
+            mode      = 'max-autotune',
+            fullgraph = True,
+            dynamic   = False,
+            backend   = 'inductor'
+        )
+        
     # Train the model
     train_model(model, train_loader, test_loader, args)
 
