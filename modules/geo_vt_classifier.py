@@ -224,8 +224,14 @@ class GeoVTModel:
         self.model = torch.compile(self.model, mode=mode, fullgraph=fullgraph, dynamic=dynamic, backend=backend)
     
     def save(self, filepath):
+        # Extract state dict from compiled or regular model
+        if hasattr(self.model, '_orig_mod'):
+            state_dict = self.model._orig_mod.state_dict()
+        else:
+            state_dict = self.model.state_dict()
+            
         torch.save({
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': state_dict,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'init_params': self.init_params,
