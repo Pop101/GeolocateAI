@@ -1,19 +1,21 @@
 import torch
 import torch.nn as nn
-from torch.utils.checkpoint import checkpoint
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+    checkpoint_wrapper,
+    CheckpointImpl,
+)
 
 class CheckpointedSequential(nn.Module):
     """A Sequential-like module that applies gradient checkpointing to specified layers"""
     
     def __init__(self, *layers, checkpoint_segments=None):
         super().__init__()
-        self.layers = nn.ModuleList(layers)
         
         if checkpoint_segments is None:
             checkpoint_segments = []
-            for i in range(len(self.layers)):
+            for i in range(len(layers)):
                 # Default to checkpoint if num params in layer is large (> 1M)
-                if sum(p.numel() for p in self.layers[i].parameters()) > 1_000_000:
+                if sum(p.numel() for p in layers[i].parameters()) > 1_000_000:
                     checkpoint_segments.append(i)
         
         elif isinstance(checkpoint_segments, int):
@@ -24,13 +26,31 @@ class CheckpointedSequential(nn.Module):
             raise TypeError("checkpoint_segments must be None, an int, or an iterable of ints")
         
         self.checkpoint_segments = checkpoint_segments or []
+        
+        # Wrap layers with checkpoint_wrapper if they should be checkpointed
+        processed_layers = []
+        for i, layer in enumerate(layers):
+            if i in self.checkpoint_segments:
+                # Wrap layer with the new checkpoint_wrapper
+                checkpointed_layer = checkpoint_wrapper(
+                    layer,
+                    checkpoint_impl=CheckpointImpl.NO_REENTRANT
+                )
+                processed_layers.append(checkpointed_layer)
+            else:
+                processed_layers.append(layer)
+        
+        self.layers = nn.ModuleList(processed_layers)
     
     def forward(self, x):
-        for i, layer in enumerate(self.layers):
-            if self.training and i in self.checkpoint_segments:
-                x = checkpoint(layer, x, use_reentrant=False)
-            else:
-                x = layer(x)
+        for layer in self.layers:
+            x = layer(x)
         return x
     
+    def get_checkpointed_indices(self):
+        """Helper method to see which layer indices are checkpointed"""
+        return self.checkpoint_segments.copy()
     
+    def is_layer_checkpointed(self, index):
+        """Check if a specific layer index is checkpointed"""
+        return index in self.checkpoint_segments
