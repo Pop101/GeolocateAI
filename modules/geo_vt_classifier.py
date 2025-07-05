@@ -220,10 +220,7 @@ class GeoVTModel:
         
     def compile(self, mode: str = 'default', fullgraph: bool = False, dynamic: bool = False, backend: str = 'inductor'):
         """Compiles the model for optimized inference."""
-        if mode == 'default':
-            self.model = torch.compile(self.model, fullgraph=fullgraph, dynamic=dynamic, backend=backend)
-        else:
-            raise ValueError(f"Unsupported compilation mode: {mode}")
+        self.model = torch.compile(self.model, mode=mode, fullgraph=fullgraph, dynamic=dynamic, backend=backend)
     
     def save(self, filepath):
         torch.save({
