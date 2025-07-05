@@ -3,6 +3,8 @@
 EMAIL="$1"
 LOGFILE="./logs/training_$(date +%Y%m%d_%H%M%S).log"
 
+mkdir -p "$(dirname "$LOGFILE")"
+
 {
     echo "Training started at $(date)"
     echo "----------------------------------------"
