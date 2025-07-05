@@ -320,7 +320,7 @@ def main():
     model.send_to_device(device, dtype=torch.bfloat16)
     if args.compile:
         model.compile(
-            mode      = 'max-autotune',
+            mode      = 'reduce-overhead',
             fullgraph = True,
             dynamic   = False,
             backend   = 'inductor'
