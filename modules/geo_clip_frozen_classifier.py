@@ -12,15 +12,16 @@ from modules.kldivlosssoftmax import KLDivLossWithSoftmax
 import warnings
 
 class GeoFrozenClipModel:
-    def __init__(self, lr=0.001, num_classes=150_000, num_head_dims=1024*2, num_hidden_dims=1024*8, heads=32, depth=8, clip_model_name="openai/clip-vit-large-patch14", output_type=ClipOutput.POOLER_OUTPUT, device=None, dtype=torch.float32):   
+    def __init__(self, lr=0.001, num_classes=150_000, num_head_dims=1024*2, num_hidden_dims=1024*8, heads=32, depth=8, enable_checkpointing=False, clip_model_name="openai/clip-vit-large-patch14", output_type=ClipOutput.POOLER_OUTPUT, device=None, dtype=torch.float32):   
         self.device = device
         self.dtype = dtype
         
         # Initialize model layers
-        clip_model = ClipBaseModel(clip_model_name, output_type, freeze=True)
+        clip_model = ClipBaseModel(clip_model_name, output_type, freeze=True, enable_checkpointing=enable_checkpointing)
         
         # Create a single sequential model
-        self.model = CheckpointedSequential(
+        seq = CheckpointedSequential if enable_checkpointing else nn.Sequential
+        self.model = seq(
             # Clip Embed
             clip_model,
             nn.LayerNorm(clip_model.logits_dim),

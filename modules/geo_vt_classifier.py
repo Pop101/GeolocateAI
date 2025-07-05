@@ -12,14 +12,15 @@ from modules.kldivlosssoftmax import KLDivLossWithSoftmax
 import warnings
 
 class GeoVTModel:
-    def __init__(self, lr=0.001, num_classes=150_000, num_head_dims=1024*2, num_hidden_dims=1024*8, heads=32, depth=8, vt_base:VisionTransformerBase=VisionTransformerBase.VIT_B_32, device=None, dtype=torch.float32):   
+    def __init__(self, lr=0.001, num_classes=150_000, num_head_dims=1024*2, num_hidden_dims=1024*8, heads=32, depth=8, enable_checkpointing=False, vt_base:VisionTransformerBase=VisionTransformerBase.VIT_B_32, device=None, dtype=torch.float32):   
         self.device = device
         
         # Initialize vision transformer model
         vt_model = VisionTransformerModel(vt_base=vt_base)
         
         # Create a single sequential model
-        self.model = CheckpointedSequential(
+        seq = CheckpointedSequential if enable_checkpointing else nn.Sequential
+        self.model = seq(
             # Vision Transformer as base head
             vt_model,
             nn.LayerNorm(vt_model.logits_dim),
