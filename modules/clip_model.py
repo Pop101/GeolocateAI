@@ -30,8 +30,7 @@ class ClipBaseModel(nn.Module):
             param.requires_grad = not freeze
     
     def forward(self, x):
-        with torch._dynamo.disable(): # Cannot compile with dynamo
-            outputs = self.clip_vision_model(pixel_values=x)
+        outputs = self.clip_vision_model(pixel_values=x)
             
         if self.output_type == ClipOutput.POOLER_OUTPUT:
             return outputs.pooler_output

@@ -223,7 +223,11 @@ class GeoFrozenClipModel:
         
     def compile(self, mode: str = 'default', fullgraph: bool = False, dynamic: bool = False, backend: str = 'inductor'):
         """Compiles the model for optimized inference."""
-        self.model = torch.compile(self.model, mode=mode, fullgraph=fullgraph, dynamic=dynamic, backend=backend)
+        self.model = torch.compile(self.model, mode=mode, fullgraph=fullgraph, dynamic=dynamic, backend=backend, options={
+            "triton.cudagraphs": False,
+            "shape_padding": True,
+            "max_autotune": False,
+        })
     
     def save(self, filepath):
         # Extract state dict from compiled or regular model
