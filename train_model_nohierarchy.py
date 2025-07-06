@@ -267,7 +267,7 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
     print(f"📊 Model: {args.base_model}_{'frozen' if args.freeze_clip else 'liquid'} | Depth: {args.depth} | Embed: {args.embed_dim} | Hidden: {args.num_hidden_dims} | Heads: {args.heads}")
     print(f"🔄 Current batch: {model.total_batches_trained:,} / {args.max_batches:,}\n")
     
-    pbar = tqdm(desc="Training", initial=model.total_batches_trained, unit="batch", total=args.max_batches, dynamic_ncols=True)
+    pbar = tqdm(desc="Training", initial=model.total_batches_trained, unit="batch", dynamic_ncols=True)
     test_loss = test_acc = float("inf")
     
     try:
