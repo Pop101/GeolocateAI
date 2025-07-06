@@ -1,10 +1,7 @@
 #!/bin/bash
-
 EMAIL="$1"
 LOGFILE="./logs/training_$(date +%Y%m%d_%H%M%S).log"
-
 mkdir -p "$(dirname "$LOGFILE")"
-
 {
     echo "Training started at $(date)"
     echo "----------------------------------------"
@@ -29,9 +26,34 @@ mkdir -p "$(dirname "$LOGFILE")"
     echo "Training finished at $(date)"
 } | tee "$LOGFILE"
 
-# Email the results if sendmail exists and email provided
+# Capture the exit code
+EXIT_CODE=${PIPESTATUS[0]}
+
+# Construct email content
+if [[ $EXIT_CODE -eq 0 ]]; then
+EMAIL_CONTENT=$(cat << EOF
+Subject: Training Completed Successfully - $(date)
+
+Training completed successfully at $(date)
+================================
+$(tail -n 100 "$LOGFILE")
+EOF
+)
+
+else
+EMAIL_CONTENT=$(cat << EOF
+Subject: Training Failed (Exit Code: $EXIT_CODE) - $(date)
+
+Training failed with exit code $EXIT_CODE at $(date)
+================================
+$(tail -n 100 "$LOGFILE")
+EOF
+)
+fi
+
+# Email the results if email provided and mail command exists
 if [[ -n "$EMAIL" ]] && command -v sendmail >/dev/null 2>&1; then
-    echo "Training completed - $(date)" | sendmail "$EMAIL" < "$LOGFILE"
+    echo "$EMAIL_CONTENT" | sendmail "$EMAIL"
 elif [[ -n "$EMAIL" ]] && command -v msmtp >/dev/null 2>&1; then
-    echo "Training completed - $(date)" | msmtp "$EMAIL" < "$LOGFILE"
+    echo "$EMAIL_CONTENT" | msmtp "$EMAIL"
 fi
