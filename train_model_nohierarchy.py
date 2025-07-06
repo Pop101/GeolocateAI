@@ -144,7 +144,17 @@ def prepare_data(coords_file: str, train_test_split: float, batch_size: int, bat
 
 def create_model(args: argparse.Namespace, num_clusters: int) -> Any:
     """Create model with specified architecture and parameters."""
-    base_params = {"lr": args.learning_rate, "num_classes": num_clusters, "num_head_dims": args.embed_dim, "num_hidden_dims": args.num_hidden_dims, "heads": args.heads, "depth": args.depth, "device": device, "dtype": torch.bfloat16}
+    base_params = {
+        "lr": args.learning_rate,
+        "num_classes": num_clusters,
+        "num_head_dims": args.embed_dim,
+        "num_hidden_dims": args.num_hidden_dims,
+        "heads": args.heads,
+        "depth": args.depth,
+        "enable_checkpointing": not args.compile,  # Disable checkpointing if compiling
+        "device": device,
+        "dtype": torch.bfloat16
+    }
     
     if args.base_model == "clip":
         base_params["clip_model_name"] = args.clip_model_name
