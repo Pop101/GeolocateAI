@@ -273,7 +273,7 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
     try:
         while model.total_batches_trained < args.max_batches:
             for batch in train_loader:
-                if args.compile:
+                if args.compile and device.type == 'cuda':
                     torch.compiler.cudagraph_mark_step_begin()
                     
                 # Efficient GPU transfer
@@ -336,7 +336,13 @@ def main():
         model.compile(
             fullgraph=False,
             dynamic=False,
-            backend='cudagraphs'
+            backend='inductor',
+            options={
+                "triton.cudagraphs": False,
+                "max_autotune": True,
+                "coordinate_descent_tuning": True,
+                "shape_padding": True
+            }
         )
         
     # Train the model
