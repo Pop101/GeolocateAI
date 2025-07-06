@@ -182,7 +182,7 @@ class GeoVTModel:
         
     def get_current_lr(self):
         """Return the current learning rate"""
-        return self.optimizer.param_groups[0]['lr']
+        return max(group['lr'] for group in self.optimizer.param_groups)
     
     def get_model_size(self):
         """Returns the ON-DEVICE size of the model in bytes"""
