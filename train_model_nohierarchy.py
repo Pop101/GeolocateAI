@@ -323,7 +323,7 @@ def main():
         model.compile(
             fullgraph=False,
             dynamic=False,
-            backend='inductor'
+            backend='cudagraphs'
         )
         
     # Train the model
