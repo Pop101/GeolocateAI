@@ -1,23 +1,21 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from transformers import CLIPVisionModel
-
 from enum import Enum
-
 
 class ClipOutput(Enum):
     """Enum for the output type of the CLIP model"""
     POOLER_OUTPUT = "pooler_output"
     LAST_HIDDEN_STATE = "last_hidden_state"
 
-torch.serialization.add_safe_globals([ClipOutput])    
-    
+torch.serialization.add_safe_globals([ClipOutput])
+
 class ClipBaseModel(nn.Module):
     def __init__(self, model_name="openai/clip-vit-large-patch14", freeze=False, enable_checkpointing=False, output_type=ClipOutput.POOLER_OUTPUT):
         super().__init__()
         
         self.clip_vision_model = CLIPVisionModel.from_pretrained(model_name)
+        
         self.output_type = output_type
         self.enable_checkpointing = enable_checkpointing
         
@@ -29,9 +27,10 @@ class ClipBaseModel(nn.Module):
         for param in self.clip_vision_model.parameters():
             param.requires_grad = not freeze
     
+    @torch._dynamo.disable
     def forward(self, x):
         outputs = self.clip_vision_model(pixel_values=x)
-            
+        
         if self.output_type == ClipOutput.POOLER_OUTPUT:
             return outputs.pooler_output
         elif self.output_type == ClipOutput.LAST_HIDDEN_STATE:
