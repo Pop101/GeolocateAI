@@ -263,6 +263,9 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
     try:
         while model.total_batches_trained < args.max_batches:
             for batch in train_loader:
+                if args.compile:
+                    torch.compiler.cudagraph_mark_step_begin()
+                    
                 # Efficient GPU transfer
                 batch = [b.to(device, non_blocking=True, dtype=torch.bfloat16) for b in batch]
                 gc.collect()
