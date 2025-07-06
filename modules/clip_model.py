@@ -26,6 +26,7 @@ class ClipBaseModel(nn.Module):
             param.requires_grad = not freeze
     
     @torch.compiler.disable
+    @torch.jit.ignore
     def _run_clip_forward(self, x):
         """Separate method to run CLIP without compilation"""
         return self.clip_vision_model(pixel_values=x)

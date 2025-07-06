@@ -321,7 +321,7 @@ def main():
     if args.compile:
         model.compile(
             fullgraph = True,
-            dynamic   = False,
+            dynamic   = True,
             backend   = 'inductor'
         )
         
