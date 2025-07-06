@@ -16,9 +16,8 @@ torch.serialization.add_safe_globals([ClipOutput])
 class ClipBaseModel(nn.Module):
     def __init__(self, model_name="openai/clip-vit-large-patch14", freeze=False, enable_checkpointing=False, output_type=ClipOutput.POOLER_OUTPUT):
         super().__init__()
-        with torch._dynamo.config.patch(suppress_errors=True):
-            self.clip_vision_model = CLIPVisionModel.from_pretrained(model_name)
-            
+        
+        self.clip_vision_model = CLIPVisionModel.from_pretrained(model_name)
         self.output_type = output_type
         self.enable_checkpointing = enable_checkpointing
         
@@ -31,8 +30,9 @@ class ClipBaseModel(nn.Module):
             param.requires_grad = not freeze
     
     def forward(self, x):
-        # Remove the dynamic checkpointing setup from forward()
-        outputs = self.clip_vision_model(pixel_values=x)
+        with torch._dynamo.disable(): # Cannot compile with dynamo
+            outputs = self.clip_vision_model(pixel_values=x)
+            
         if self.output_type == ClipOutput.POOLER_OUTPUT:
             return outputs.pooler_output
         elif self.output_type == ClipOutput.LAST_HIDDEN_STATE:
