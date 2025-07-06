@@ -322,7 +322,6 @@ def main():
         torch._dynamo.config.optimize_ddp = False
         torch._dynamo.config.capture_scalar_outputs = True
         model.compile(
-            mode      = 'reduce-overhead',
             fullgraph = True,
             dynamic   = False,
             backend   = 'inductor'
