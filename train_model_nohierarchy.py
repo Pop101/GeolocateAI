@@ -321,6 +321,7 @@ def main():
     if args.compile:
         torch._dynamo.config.optimize_ddp = False
         torch._dynamo.config.capture_scalar_outputs = True
+        torch._dynamo.config.suppress_errors = True
         model.compile(
             fullgraph = True,
             dynamic   = False,
