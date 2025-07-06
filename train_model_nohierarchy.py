@@ -267,7 +267,7 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
     print(f"📊 Model: {args.base_model}_{'frozen' if args.freeze_clip else 'liquid'} | Depth: {args.depth} | Embed: {args.embed_dim} | Hidden: {args.num_hidden_dims} | Heads: {args.heads}")
     print(f"🔄 Current batch: {model.total_batches_trained:,} / {args.max_batches:,}\n")
     
-    pbar = tqdm(desc="Training", initial=model.total_batches_trained)
+    pbar = tqdm(desc="Training", initial=model.total_batches_trained, unit="batch", total=args.max_batches, dynamic_ncols=True)
     test_loss = test_acc = float("inf")
     
     try:
@@ -295,7 +295,7 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
                 # Periodic evaluation
                 if model.total_batches_trained % args.test_every == 0:
                     test_batches = int(len(test_loader) * args.test_frac)
-                    test_loss, test_acc = model.evaluate(tqdm(islice(test_loader, test_batches), desc="Evaluating", total=test_batches), transforms=test_transforms)
+                    test_loss, test_acc = model.evaluate(tqdm(islice(test_loader, test_batches), desc="Evaluating", total=test_batches, unit="batch"), transforms=test_transforms)
                     model.update_scheduler(test_loss)
                     
                     with open(losses_file, "a") as f:
