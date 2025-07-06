@@ -233,14 +233,10 @@ class GeoLiquidClipModel:
         self.device = device
         self.dtype = dtype
         
-    def compile(self, fullgraph: bool = False, dynamic: bool = False, backend: str = 'inductor'):
+    def compile(self, **kwargs):
         """Compiles the model for optimized inference."""
         # Only compile the classifier head, not the CLIP base
-        self.model = torch.compile(self.model, fullgraph=fullgraph, dynamic=dynamic, backend=backend, options={
-            "triton.cudagraphs": False,
-            "shape_padding": True,
-            "max_autotune": False,
-        })
+        self.model = torch.compile(self.model, **kwargs)
     
     def save(self, filepath):
         # Extract state dict from compiled or regular model
