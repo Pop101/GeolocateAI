@@ -11,25 +11,28 @@ class ClipOutput(Enum):
 torch.serialization.add_safe_globals([ClipOutput])
 
 class ClipBaseModel(nn.Module):
-    def __init__(self, model_name="openai/clip-vit-large-patch14", freeze=False, enable_checkpointing=False, output_type=ClipOutput.POOLER_OUTPUT):
+    def __init__(self, model_name="openai/clip-vit-large-patch14", freeze=False, 
+                 enable_checkpointing=False, output_type=ClipOutput.POOLER_OUTPUT):
         super().__init__()
         
         self.clip_vision_model = CLIPVisionModel.from_pretrained(model_name)
-        
         self.output_type = output_type
         self.enable_checkpointing = enable_checkpointing
         
-        # Gradient checkpointing
         if enable_checkpointing:
             self.clip_vision_model.gradient_checkpointing_enable()
         
-        # Freeze the model
         for param in self.clip_vision_model.parameters():
             param.requires_grad = not freeze
     
-    @torch._dynamo.disable
+    @torch.compiler.disable
+    def _run_clip_forward(self, x):
+        """Separate method to run CLIP without compilation"""
+        return self.clip_vision_model(pixel_values=x)
+    
     def forward(self, x):
-        outputs = self.clip_vision_model(pixel_values=x)
+        # Call the disabled method
+        outputs = self._run_clip_forward(x)
         
         if self.output_type == ClipOutput.POOLER_OUTPUT:
             return outputs.pooler_output
@@ -40,7 +43,6 @@ class ClipBaseModel(nn.Module):
     
     @property
     def logits_dim(self):
-        """Returns the dimensions of the model's output logits"""
         return self.clip_vision_model.config.hidden_size
     
     @property
