@@ -306,6 +306,11 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
                     
                     print(f"\n📈 Batch {model.total_batches_trained:,}: Loss={loss:.4f}, Test Loss={test_loss:.4f}, Test Acc={test_acc:.4f}, LR={model.get_current_lr():.2e}\n")
                 
+                # "Fix" memory leak
+                if model.total_batches_trained % 10 == 0:
+                    if device.type == 'cuda': torch.cuda.empty_cache()
+                    gc.collect()
+                    
                 if model.total_batches_trained >= args.max_batches:
                     break
                     
