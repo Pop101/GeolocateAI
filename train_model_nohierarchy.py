@@ -337,12 +337,7 @@ def main():
             fullgraph=False,
             dynamic=False,
             backend='inductor',
-            options={
-                "triton.cudagraphs": False,
-                "max_autotune": True,
-                "coordinate_descent_tuning": True,
-                "shape_padding": True
-            }
+            mode='default'
         )
         
     # Train the model
