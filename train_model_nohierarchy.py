@@ -319,6 +319,8 @@ def main():
     model = load_model_checkpoint(args, num_clusters)
     model.send_to_device(device, dtype=torch.bfloat16)
     if args.compile:
+        import torch._dynamo
+        torch._dynamo.config.suppress_errors = True
         model.compile(
             fullgraph = True,
             dynamic   = True,
