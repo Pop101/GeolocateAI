@@ -15,6 +15,7 @@ import polars as pl
 import numpy as np
 from torch.utils.data import DataLoader
 import torch
+import torch._dynamo
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -319,7 +320,6 @@ def main():
     model = load_model_checkpoint(args, num_clusters)
     model.send_to_device(device, dtype=torch.bfloat16)
     if args.compile:
-        import torch._dynamo
         torch._dynamo.config.suppress_errors = True
         model.compile(
             fullgraph = True,
