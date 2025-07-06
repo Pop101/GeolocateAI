@@ -16,18 +16,17 @@ class GeoLiquidClipModel:
         self.device = device
         self.dtype = dtype
         
-        # Initialize model layers
-        clip_model = ClipBaseModel(clip_model_name, output_type=output_type, enable_checkpointing=enable_checkpointing)
+        # Initialize CLIP base model separately
+        self.base = ClipBaseModel(clip_model_name, output_type=output_type, enable_checkpointing=enable_checkpointing)
         
-        # Create a single sequential model
+        # Create the classifier head model
         seq = CheckpointedSequential if enable_checkpointing else nn.Sequential
         self.model = seq(
-            # Clip Embed
-            clip_model,
-            nn.LayerNorm(clip_model.logits_dim),
+            # LayerNorm after CLIP
+            nn.LayerNorm(self.base.logits_dim),
             
             # Project to hidden dimensions if needed
-            nn.Linear(clip_model.logits_dim, num_head_dims) if clip_model.logits_dim != num_head_dims else nn.Identity(), 
+            nn.Linear(self.base.logits_dim, num_head_dims) if self.base.logits_dim != num_head_dims else nn.Identity(), 
             
             # Get feature perspective (different activation functions with attention)
             FeaturePerspective(num_head_dims, num_head_dims, num_heads=heads),
@@ -43,14 +42,12 @@ class GeoLiquidClipModel:
         self.criterion = KLDivLossWithSoftmax()
         
         # Optimizer with different learning rates for different components
-        clip_params = []
+        clip_params = list(self.base.parameters())
         geo_processor_params = []
         classifier_params = []
         
         for name, param in self.model.named_parameters():
-            if 'clip' in name.lower():
-                clip_params.append(param)
-            elif 'feature_perspective' in name.lower():
+            if 'feature_perspective' in name.lower():
                 geo_processor_params.append(param)
             else:
                 classifier_params.append(param)
@@ -88,6 +85,7 @@ class GeoLiquidClipModel:
         }        
     
     def train_batch(self, batch, transforms=None, accumulation_steps=3):
+        self.base.train()
         self.model.train()
         
         # Unpack Batch
@@ -108,8 +106,9 @@ class GeoLiquidClipModel:
             sub_images = images[start_idx:end_idx]
             sub_logits = logits[start_idx:end_idx]
             
-            # Forward pass
-            outputs = self.model(sub_images)
+            # Forward pass through base and model
+            clip_features = self.base(sub_images)
+            outputs = self.model(clip_features)
             loss = self.criterion(outputs, sub_logits) / accumulation_steps
             if loss.isnan().any():
                 warnings.warn(f"NaN loss encountered in batch {i+1}/{accumulation_steps}. Skipping this batch.")
@@ -120,7 +119,7 @@ class GeoLiquidClipModel:
             accumulated_loss += loss.item()
         
         # Update weights after accumulation
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(list(self.base.parameters()) + list(self.model.parameters()), max_norm=1.0)
         self.optimizer.step()
         self.optimizer.zero_grad()
         
@@ -137,6 +136,7 @@ class GeoLiquidClipModel:
             average hit rate: float
         """
         
+        self.base.eval()
         self.model.eval()
         total_loss = 0.0
         total_hits = 0.0
@@ -151,7 +151,8 @@ class GeoLiquidClipModel:
                 logits = logits.to(self.device, dtype=self.dtype)
             
                 # Get output floats
-                outputs = self.model(inputs)
+                clip_features = self.base(inputs)
+                outputs = self.model(clip_features)
                 outputs = outputs.view(logits.shape)
                 loss = self.criterion(outputs, logits)
                 
@@ -173,9 +174,11 @@ class GeoLiquidClipModel:
     
     def __call__(self, image: torch.Tensor) -> torch.Tensor:
         """Return predicted logits for a single image"""
+        self.base.eval()
         self.model.eval()
         with torch.no_grad():
-            return self.model(image)
+            clip_features = self.base(image)
+            return self.model(clip_features)
         
     def predict_probabilities(self, image: torch.Tensor) -> torch.Tensor:
         """Return predicted probabilities for a single image"""
@@ -189,10 +192,10 @@ class GeoLiquidClipModel:
     def get_model_size(self):
         """Returns the ON-DEVICE size of the model in bytes"""
         total_size = 0
-        for param in self.model.parameters():
+        for param in list(self.base.parameters()) + list(self.model.parameters()):
             total_size += param.numel() * param.element_size()
         
-        for buffer in self.model.buffers():
+        for buffer in list(self.base.buffers()) + list(self.model.buffers()):
             total_size += buffer.numel() * buffer.element_size()
         
         return total_size
@@ -202,19 +205,28 @@ class GeoLiquidClipModel:
         if dtype is None:
             dtype = self.dtype
         
-        # Move parameters (these can change dtype)
+        # Move base model
+        for param in self.base.parameters():
+            param.data = param.data.to(device=device, dtype=dtype)
+            if param.grad is not None:
+                param.grad.data = param.grad.data.to(device=device, dtype=dtype)
+        
+        for buffer in self.base.buffers():
+            if buffer.dtype in [torch.int32, torch.int64, torch.long]:
+                buffer.data = buffer.data.to(device=device)
+            else:
+                buffer.data = buffer.data.to(device=device, dtype=dtype)
+        
+        # Move classifier model
         for param in self.model.parameters():
             param.data = param.data.to(device=device, dtype=dtype)
             if param.grad is not None:
                 param.grad.data = param.grad.data.to(device=device, dtype=dtype)
         
-        # Move buffers (preserve integer types)
         for buffer in self.model.buffers():
             if buffer.dtype in [torch.int32, torch.int64, torch.long]:
-                # Keep integer buffers as integers, just move device
                 buffer.data = buffer.data.to(device=device)
             else:
-                # Float buffers can change dtype
                 buffer.data = buffer.data.to(device=device, dtype=dtype)
         
         self.criterion = self.criterion.to(device)
@@ -223,6 +235,7 @@ class GeoLiquidClipModel:
         
     def compile(self, fullgraph: bool = False, dynamic: bool = False, backend: str = 'inductor'):
         """Compiles the model for optimized inference."""
+        # Only compile the classifier head, not the CLIP base
         self.model = torch.compile(self.model, fullgraph=fullgraph, dynamic=dynamic, backend=backend, options={
             "triton.cudagraphs": False,
             "shape_padding": True,
@@ -232,12 +245,13 @@ class GeoLiquidClipModel:
     def save(self, filepath):
         # Extract state dict from compiled or regular model
         if hasattr(self.model, '_orig_mod'):
-            state_dict = self.model._orig_mod.state_dict()
+            model_state_dict = self.model._orig_mod.state_dict()
         else:
-            state_dict = self.model.state_dict()
+            model_state_dict = self.model.state_dict()
             
         torch.save({
-            'model_state_dict': state_dict,
+            'base_state_dict': self.base.state_dict(),
+            'model_state_dict': model_state_dict,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'init_params': self.init_params,
@@ -252,6 +266,7 @@ class GeoLiquidClipModel:
         model = GeoLiquidClipModel(**checkpoint['init_params'])
         
         # Load states
+        model.base.load_state_dict(checkpoint['base_state_dict'])
         model.model.load_state_dict(checkpoint['model_state_dict'])
         model.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         model.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
