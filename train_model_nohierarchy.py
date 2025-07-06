@@ -138,7 +138,7 @@ def prepare_data(coords_file: str, train_test_split: float, batch_size: int, bat
     train_sampler = create_sqrt_sampler(train_df["cluster_0"].to_list())
     loader_kwargs = {"num_workers": 6, "pin_memory": True, "persistent_workers": True, "prefetch_factor": 3, "collate_fn": partial(collate_with_logits, cluster_tensors=cluster_tensors)}
     return (
-        DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, shuffle=True, **loader_kwargs),     # Train DataLoader
+        DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, **loader_kwargs),     # Train DataLoader
         DataLoader(test_dataset, batch_size=batch_size_test, shuffle=True, **loader_kwargs),                        # Test DataLoader
         df["cluster_0"].n_unique()                                                                                  # Number of clusters
     )
