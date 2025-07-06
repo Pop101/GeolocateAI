@@ -8,6 +8,7 @@ from modules.skipattnmlp import SkipAttentionMLP
 from modules.feature_perspective import FeaturePerspective
 from modules.checkpointedsequential import CheckpointedSequential
 from modules.kldivlosssoftmax import KLDivLossWithSoftmax
+from modules.schedulers import SmoothReduceLROnPlateau
 
 import warnings
 
@@ -58,13 +59,14 @@ class GeoFrozenClipModel:
             {'params': classifier_params, 'lr': lr}           # Highest LR for final classifier
         ], lr=lr, weight_decay=1e-4)
         
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        self.scheduler = SmoothReduceLROnPlateau(
             self.optimizer,
-            mode='min',
-            factor=0.7,
-            patience=5,
-            cooldown=3,
-            min_lr=1e-6
+            smoothing_window=10,
+            historical_window=100,
+            reduction_threshold=0.95,
+            cooldown=20,
+            factor=0.8,
+            min_lr=1e-5,
         )
         
         # Use device parameter if provided
