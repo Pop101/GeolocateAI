@@ -135,7 +135,7 @@ def prepare_data(coords_file: str, train_test_split: float, batch_size: int, bat
     test_dataset = ImageDataset(test_df["path"].to_list(), test_df.select("lat", "lon", "cluster_0").rows(), IMAGE_SIZE)
     
     # Set up DataLoader with efficient GPU settings
-    sampler = create_sqrt_sampler(train_df["cluster_0"].to_list())
+    train_sampler = create_sqrt_sampler(train_df["cluster_0"].to_list())
     loader_kwargs = {"num_workers": 6, "pin_memory": True, "persistent_workers": True, "prefetch_factor": 3, "collate_fn": partial(collate_with_logits, cluster_tensors=cluster_tensors)}
     return (
         DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, shuffle=True, **loader_kwargs),     # Train DataLoader
