@@ -17,7 +17,7 @@ class GeoFrozenClipModel:
         self.dtype = dtype
         
         # Initialize model layers
-        clip_model = ClipBaseModel(clip_model_name, output_type, freeze=True, enable_checkpointing=False)
+        clip_model = ClipBaseModel(clip_model_name, output_type=output_type, freeze=True, enable_checkpointing=False)
         
         # Create a single sequential model
         seq = CheckpointedSequential if enable_checkpointing else nn.Sequential
