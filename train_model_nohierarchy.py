@@ -280,7 +280,6 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
                     
                 # Efficient GPU transfer
                 batch = [b.to(device, non_blocking=True, dtype=torch.bfloat16) for b in batch]
-                gc.collect()
                 
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16):
                     loss = model.train_batch(batch, transforms=train_transforms)
