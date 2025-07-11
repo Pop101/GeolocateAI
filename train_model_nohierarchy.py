@@ -286,14 +286,14 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
                 
                 pbar.update(1)
                 pbar.set_postfix({"Loss": f"{loss:.4f}", "Test Loss": f"{test_loss:.4f}", "Test Acc": f"{test_acc:.4f}"})
-                tqdm.write(f"Save every: {args.save_every}")
+                pbar.write(f"Save every: {args.save_every}")
                 pbar.refresh()
                 
                 # Periodic checkpointing
                 if args.save_every > 0 and model.total_batches_trained % args.save_every == 0:
                     filename = get_model_filename(args.base_model, args.freeze_clip, model.total_batches_trained if args.save_batch_name else None, training=not args.save_batch_name)
                     model.save(os.path.join(args.save_dir, filename))
-                    tqdm.write(f"\n💾 Saved checkpoint: {filename}")
+                    pbar.write(f"\n💾 Saved checkpoint: {filename}")
                 
                 # Periodic evaluation
                 if model.total_batches_trained % args.test_every == 0:
@@ -307,7 +307,7 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
                     if args.save_every < 0:  # Default behavior: save on test
                         model.save(os.path.join(args.save_dir, get_model_filename(args.base_model, args.freeze_clip, training=True)))
                     
-                    tqdm.write(f"\n📈 Batch {model.total_batches_trained:,}: Loss={loss:.4f}, Test Loss={test_loss:.4f}, Test Acc={test_acc:.4f}, LR={model.get_current_lr():.2e}\n")
+                    pbar.write(f"\n📈 Batch {model.total_batches_trained:,}: Loss={loss:.4f}, Test Loss={test_loss:.4f}, Test Acc={test_acc:.4f}, LR={model.get_current_lr():.2e}\n")
                 
                 # "Fix" memory leak
                 if model.total_batches_trained % 10 == 0:
@@ -319,7 +319,7 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
                     break
                     
     except KeyboardInterrupt:
-        tqdm.write("\n\n⚠️  Training interrupted by user")
+        pbar.write("\n\n⚠️  Training interrupted by user")
     finally:
         pbar.close()
         final_path = os.path.join(args.save_dir, get_model_filename(args.base_model, args.freeze_clip))
