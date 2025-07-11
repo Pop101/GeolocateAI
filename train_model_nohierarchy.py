@@ -286,7 +286,7 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
                 
                 pbar.update(1)
                 pbar.set_postfix({"Loss": f"{loss:.4f}", "Test Loss": f"{test_loss:.4f}", "Test Acc": f"{test_acc:.4f}"})
-                
+                print(args.save_every, " - save every")
                 # Periodic checkpointing
                 if args.save_every > 0 and model.total_batches_trained % args.save_every == 0:
                     filename = get_model_filename(args.base_model, args.freeze_clip, model.total_batches_trained if args.save_batch_name else None, training=not args.save_batch_name)
