@@ -287,6 +287,7 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
                 pbar.update(1)
                 pbar.set_postfix({"Loss": f"{loss:.4f}", "Test Loss": f"{test_loss:.4f}", "Test Acc": f"{test_acc:.4f}"})
                 tqdm.write(f"Save every: {args.save_every}")
+                pbar.refresh()
                 
                 # Periodic checkpointing
                 if args.save_every > 0 and model.total_batches_trained % args.save_every == 0:
@@ -312,7 +313,8 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
                 if model.total_batches_trained % 10 == 0:
                     if device.type == 'cuda': torch.cuda.empty_cache()
                     gc.collect()
-                    
+                
+                pbar.refresh()
                 if model.total_batches_trained >= args.max_batches:
                     break
                     
