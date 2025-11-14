@@ -2,7 +2,6 @@ import polars as pl
 import numpy as np
 from sklearn.cluster import KMeans
 import pickle as pkl
-import csv
 from geopy.distance import geodesic
 
 # Load the HDBSCAN model and data
@@ -27,20 +26,10 @@ for i, x in enumerate(points_at_level, start=1):
 
 def calculate_centroids(df, cluster_col):
     """Calculate centroids and sizes for clusters in a dataframe."""
-    centroids = []
-    cluster_ids = []
-    
-    for cluster in df[cluster_col].unique():
-        cluster_df = df.filter(pl.col(cluster_col) == cluster)
-        centroid = cluster_df.select(pl.col(['lat', 'lon'])).mean().row(0)
-        centroids.append(centroid)
-        cluster_ids.append(cluster)
-    
-    return pl.DataFrame({
-        'lat': np.array(centroids)[:, 0],
-        'lon': np.array(centroids)[:, 1],
-        'cluster': cluster_ids
-    })
+    return df.group_by(cluster_col).agg([
+        pl.col('lat').mean().alias('lat'),
+        pl.col('lon').mean().alias('lon')
+    ]).rename({cluster_col: 'cluster'})
 
 # Create hierarchical levels using iterative K-means
 print("\nCreating hierarchical levels...")
@@ -65,7 +54,7 @@ for level, n_clusters in enumerate(points_at_level, start=1):
     # Apply mapping to create new level
     df_with_clusters = df_with_clusters.with_columns(
         pl.col(f'cluster_{level-1}')
-        .map_elements(lambda x: -1 if x == -1 else cluster_labels[x], return_dtype=pl.Int64)
+        .map_elements(lambda x, labels=cluster_labels: -1 if x == -1 else labels[x], return_dtype=pl.Int64)
         .alias(f'cluster_{level}')
     )
     
@@ -74,29 +63,116 @@ for level, n_clusters in enumerate(points_at_level, start=1):
 
 # Save results
 df_with_clusters.write_csv('./hierarchical_clustered_coords.csv')
+print("Hierarchical clustered coordinates saved to ./hierarchical_clustered_coords.csv")
 
-# Make Centroid & Avg Distance to Centroid df for all levels of clustering
-with open('./hierarchical_cluster_centroids.csv', 'w', newline='') as cluster_file:
-    cluster_writer = csv.writer(cluster_file)
-    cluster_writer.writerow(
-        [f'cluster_{level}' for level in range(len(points_at_level) + 1)] + 
-        ['lat', 'lon', 'avg_dist']
+# Create hierarchical structure mapping (parent -> children)
+print("\nCreating hierarchical structure mapping...")
+cluster_columns = [f'cluster_{level}' for level in range(len(points_at_level) + 1)]
+hierarchy_df = pl.DataFrame(schema={col: pl.Int64 for col in cluster_columns} | {'num_items': pl.UInt32, 'children': pl.List(pl.Int64)})
+for level in range(len(points_at_level), 0, -1):
+    parent_col = f'cluster_{level}'
+    child_col = f'cluster_{level - 1}'
+    higher_cols = [f'cluster_{l}' for l in range(level + 1, len(cluster_columns))]
+    
+    grouped = (
+        df_with_clusters.select(higher_cols + [parent_col, child_col]).group_by(parent_col) # group of all children by parent
+        .agg([
+            pl.col(child_col).unique().implode().alias('children'),           # unique children into list
+            pl.len().alias('num_items')                                       # number of items in the group
+        ] + [pl.col(hc).first().alias(hc) for hc in higher_cols])             # get first value for higher level clusters (first is fine since they are the same)
     )
     
-    for cluster_level in range(len(points_at_level) + 1):
-        for cluster in df_with_clusters[f'cluster_{cluster_level}'].unique():
-            cluster_df = df_with_clusters.filter(pl.col(f'cluster_{cluster_level}') == cluster)
-            centroid = cluster_df.select(pl.col('lat').mean(), pl.col('lon').mean()).row(0)
-        
-            distances = []
-            for row in cluster_df.iter_rows(named=True):
-                point = (row['lat'], row['lon'])
-                centroid_point = (centroid[0], centroid[1])
-                distance = geodesic(point, centroid_point).kilometers
-                distances.append(distance)
-            
-            avg_dist = np.mean(distances)
-            cluster_writer.writerow(
-                [cluster if (cluster_level == i) else None for i in range(len(points_at_level) + 1)] +
-                [centroid[0], centroid[1], avg_dist]
-            )
+    # Match hierarchy_df schema
+    missing_cols = [col for col in cluster_columns if col not in grouped.columns]
+    grouped = grouped.with_columns([pl.lit(None).alias(col) for col in missing_cols])
+    grouped = grouped.select(hierarchy_df.columns)
+    
+    # vstack to hierarchy_df
+    hierarchy_df = pl.concat([hierarchy_df, grouped], how='vertical')
+
+# Level 0 - most granular level
+hierarchy_columns = [f'cluster_{level}' for level in range(len(points_at_level) + 1)]
+grouped = (
+    df_with_clusters.select(hierarchy_columns).group_by('cluster_0')
+    .agg([
+        pl.lit([]).alias('children'),
+        pl.len().alias('num_items')
+    ] + [pl.col(hc).first().alias(hc) for hc in hierarchy_columns if hc != 'cluster_0'])
+).select(hierarchy_df.columns)
+hierarchy_df = pl.concat([hierarchy_df, grouped], how='vertical')
+
+# Level N - least granular level (root) - (None, ... None) -> children - [highest_level_clusters]
+highest_level_col = f'cluster_{len(points_at_level)}'
+highest_level_col_values = df_with_clusters.select(highest_level_col).unique().to_series().to_list()
+grouped = pl.DataFrame({
+    'children': [highest_level_col_values],
+    'num_items': [len(highest_level_col_values)]
+} | {col: [None] for col in cluster_columns}
+).select(hierarchy_df.columns).cast(hierarchy_df.schema)
+hierarchy_df = pl.concat([hierarchy_df, grouped], how='vertical')
+
+# Serialize children lists to strings for CSV compatibility
+hierarchy_df = hierarchy_df.unique().sort(cluster_columns)
+hierarchy_df = hierarchy_df.with_columns(pl.col('children').map_elements(lambda x: str(list(x)), return_dtype=str).alias('children'))
+
+hierarchy_df.write_csv('./hierarchical_structure.csv')
+print("Hierarchical structure saved to ./hierarchical_structure.csv")
+
+# Make Centroid & Avg Distance to Centroid df for all levels of clustering
+print("\nCalculating centroids and mean/std distances...")
+
+def geodesic_distance_km(lat1, lon1, lat2, lon2) -> float:
+    """Calculate geodesic distance in kilometers using geopy."""
+    return geodesic((lat1, lon1), (lat2, lon2)).kilometers
+
+def distance_stats_to_centroid(struct) -> list[float]:
+    """Calculate mean & stdev of distance to centroid from lat/lon lists."""
+    centroid_lat = struct['centroid_lat']
+    centroid_lon = struct['centroid_lon']
+    lats = struct['all_lats']
+    lons = struct['all_lons']
+    
+    if len(lats) == 0:
+        return [0.0, 0.0]
+
+    distances = [
+        geodesic_distance_km(lat, lon, centroid_lat, centroid_lon)
+        for lat, lon in zip(lats, lons)
+    ]
+    return [float(np.mean(distances)), float(np.std(distances))]
+
+
+cluster_level_columns = [f'cluster_{level}' for level in range(len(points_at_level) + 1)]
+centroid_df = pl.DataFrame(schema={col: pl.Int64 for col in cluster_level_columns} | {'lat': pl.Float64, 'lon': pl.Float64, 'mean_dist': pl.Float64, 'std_dist': pl.Float64})
+
+for cluster_level, cluster_col in enumerate(cluster_level_columns):
+    level_centroids = (
+        df_with_clusters.group_by(cluster_col).agg([
+            pl.col('lat').mean().alias('centroid_lat'),
+            pl.col('lon').mean().alias('centroid_lon'),
+            pl.col('lat').alias('all_lats'),
+            pl.col('lon').alias('all_lons')
+        ])
+        .with_columns(
+            pl.struct(['centroid_lat', 'centroid_lon', 'all_lats', 'all_lons'])
+            .map_elements(distance_stats_to_centroid, return_dtype=pl.List(pl.Float64))
+            .alias('dist_stats')
+        )
+        .with_columns([
+            pl.col('dist_stats').list.get(0).alias('mean_dist'),
+            pl.col('dist_stats').list.get(1).alias('std_dist')
+        ])
+        .drop(['all_lats', 'all_lons', 'dist_stats'])
+        .rename({'centroid_lat': 'lat', 'centroid_lon': 'lon'})
+    )
+
+    # Match centroid_df schema
+    missing_cols = [col for col in df_with_clusters.columns if col not in level_centroids.columns]
+    level_centroids = level_centroids.with_columns([pl.lit(None).alias(col) for col in missing_cols])
+    level_centroids = level_centroids.select(centroid_df.columns)
+
+    # vstack to centroid_df
+    centroid_df = pl.concat([centroid_df, level_centroids], how='vertical')
+
+centroid_df.write_csv('./hierarchical_cluster_centroids.csv')
+print("Cluster centroids and mean/std distances saved to ./hierarchical_cluster_centroids.csv")

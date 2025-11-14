@@ -65,7 +65,7 @@ def create_cluster_mapping(centroids_path: str) -> Tuple[torch.Tensor, ...]:
     cluster_stats = pl.read_csv(
         centroids_path
     ).select(
-        "cluster_0", "lat", "lon", "avg_dist"
+        "cluster_0", "lat", "lon", "mean_dist", "std_dist"
     ).filter(
         (pl.col("cluster_0").is_not_null()) & (pl.col("cluster_0") >= 0)
     ).sort("cluster_0")
@@ -76,7 +76,8 @@ def create_cluster_mapping(centroids_path: str) -> Tuple[torch.Tensor, ...]:
         torch.tensor(data[:, 0].astype(int)),
         torch.tensor(data[:, 1]),
         torch.tensor(data[:, 2]),
-        torch.tensor(data[:, 3])
+        torch.tensor(data[:, 3]),
+        torch.tensor(data[:, 4])
     )
 
 
@@ -84,7 +85,9 @@ def get_batch_logits(batch: Tuple[torch.Tensor, torch.Tensor], cluster_tensors: 
     """Convert (images, [lat, lon, cluster]) to (images, target_distributions) using Haversine distance scoring."""
     images, outputs = batch
     batch_lats, batch_lons, batch_clusters = outputs[:, 0], outputs[:, 1], outputs[:, 2]
-    clusters, lats, lons, avg_dists = cluster_tensors
+    clusters, lats, lons, mean_dists, std_dists = cluster_tensors
+    std_dists = torch.clamp(std_dists, min=1e-6)
+    effective_scale = torch.clamp(mean_dists + std_dists, min=1e-6)
     
     # Haversine distance calculation with broadcasting
     dlat = torch.deg2rad(batch_lats.unsqueeze(1) - lats.unsqueeze(0))
@@ -94,7 +97,8 @@ def get_batch_logits(batch: Tuple[torch.Tensor, torch.Tensor], cluster_tensors: 
     distances = EARTH_RADIUS_KM * 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))
     
     # Create scores (higher for closer distances)
-    scores = -torch.log1p(distances / avg_dists.unsqueeze(0))
+    normalized_distances = distances / effective_scale.unsqueeze(0)
+    scores = -torch.log1p(normalized_distances)
     
     # Boost correct cluster
     correct_mask = clusters.unsqueeze(0) == batch_clusters.unsqueeze(1)
@@ -286,7 +290,6 @@ def train_model(model: Any, train_loader: DataLoader, test_loader: DataLoader, a
                 
                 pbar.update(1)
                 pbar.set_postfix({"Loss": f"{loss:.4f}", "Test Loss": f"{test_loss:.4f}", "Test Acc": f"{test_acc:.4f}"})
-                pbar.write(f"Save every: {args.save_every}")
                 pbar.refresh()
                 
                 # Periodic checkpointing

@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from torch.utils.data import WeightedRandomSampler
-from typing import List, Optional, Callable, Literal
+from typing import List, Optional, Callable
 
 def _compute_class_weights(labels: np.ndarray, weight_fn: Callable[[np.ndarray], np.ndarray]) -> torch.DoubleTensor:
     """Compute sample weights based on class frequencies and a weighting function."""
