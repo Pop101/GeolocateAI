@@ -43,7 +43,7 @@ class GeoFrozenClipModel:
         self.criterion = KLDivLossWithSoftmax()
         
         # Optimizer with different learning rates for different components
-        clip_params = list(self.base.parameters())
+        clip_params = [p for p in self.base.parameters() if p.requires_grad]
         geo_processor_params = []
         classifier_params = []
         
@@ -53,11 +53,18 @@ class GeoFrozenClipModel:
             else:
                 classifier_params.append(param)
 
-        self.optimizer = bnb.optim.AdamW8bit([
-            {'params': clip_params, 'lr': lr * 0.05},         # Lowest LR for pretrained CLIP
-            {'params': geo_processor_params, 'lr': lr * 0.5}, # Medium LR for geo reasoning
-            {'params': classifier_params, 'lr': lr}           # Highest LR for final classifier
-        ], lr=lr, weight_decay=1e-4)
+        param_groups = []
+        if clip_params:
+            param_groups.append({'params': clip_params, 'lr': lr * 0.05})
+        if geo_processor_params:
+            param_groups.append({'params': geo_processor_params, 'lr': lr * 0.5})
+        if classifier_params:
+            param_groups.append({'params': classifier_params, 'lr': lr})
+
+        if not param_groups:
+            raise ValueError("No trainable parameters found for optimizer")
+
+        self.optimizer = bnb.optim.AdamW8bit(param_groups, lr=lr, weight_decay=1e-4)
         
         self.scheduler = SmoothReduceLROnPlateau(
             self.optimizer,
@@ -75,6 +82,8 @@ class GeoFrozenClipModel:
             
         # Save init params for future use
         self.total_batches_trained = 0
+        self._grad_clip_interval = 4
+        self._grad_clip_norm = 1.0
         self.init_params = {
             'lr': lr,
             'num_classes': num_classes,
@@ -87,44 +96,57 @@ class GeoFrozenClipModel:
         }   
     
     def train_batch(self, batch, transforms=None, accumulation_steps=3):
-        self.base.train()
+        self.base.eval()  # keep CLIP frozen
         self.model.train()
-        
-        # Unpack Batch
+
         images, logits = batch
-        
-        # Apply transforms on-the-fly
+
         if transforms:
             images = transforms(images)
-        
-        # Split batch for accumulation
-        batch_size = images.size(0) // accumulation_steps
-        
-        accumulated_loss = 0
-        for i in range(accumulation_steps):
-            start_idx = i * batch_size
-            end_idx = (i + 1) * batch_size
-            
+
+        target_device = self.device or images.device
+        target_dtype = self.dtype or images.dtype
+
+        images = images.to(target_device, dtype=target_dtype, non_blocking=True)
+        logits = logits.to(target_device, dtype=target_dtype, non_blocking=True)
+
+        windows = list(self._accumulation_ranges(images.size(0), accumulation_steps))
+        if not windows:
+            windows = [(0, images.size(0))]
+        loss_scale = 1.0 / len(windows)
+
+        accumulated_loss = 0.0
+
+        for idx, (start_idx, end_idx) in enumerate(windows, start=1):
             sub_images = images[start_idx:end_idx]
             sub_logits = logits[start_idx:end_idx]
-            
-            # Forward pass through base and model
-            clip_features = self.base(sub_images)
-            outputs = self.model(clip_features)
-            loss = self.criterion(outputs, sub_logits) / accumulation_steps
-            if loss.isnan().any():
-                warnings.warn(f"NaN loss encountered in batch {i+1}/{accumulation_steps}. Skipping this batch.")
+            if sub_images.numel() == 0:
                 continue
-            
-            # Backward pass
+
+            with torch.no_grad():
+                clip_features = self.base(sub_images)
+
+            outputs = self.model(clip_features)
+            chunk_loss = self.criterion(outputs, sub_logits)
+            loss = chunk_loss * loss_scale
+
+            if torch.isnan(loss).any():
+                warnings.warn(
+                    f"NaN loss encountered in accumulation window {idx}/{len(windows)}. Skipping."
+                )
+                continue
+
             loss.backward()
-            accumulated_loss += loss.item()
-        
-        # Update weights after accumulation
-        torch.nn.utils.clip_grad_norm_(list(self.base.parameters()) + list(self.model.parameters()), max_norm=1.0)
+            accumulated_loss += chunk_loss.detach().float().item()
+
+        trainable_params = list(self.model.parameters())
+        if any(p.requires_grad for p in self.base.parameters()):
+            trainable_params = list(self.base.parameters()) + trainable_params
+
+        self._maybe_clip_gradients(trainable_params, self.total_batches_trained + 1)
         self.optimizer.step()
-        self.optimizer.zero_grad()
-        
+        self.optimizer.zero_grad(set_to_none=True)
+
         self.total_batches_trained += 1
         return accumulated_loss
     
@@ -201,6 +223,27 @@ class GeoFrozenClipModel:
             total_size += buffer.numel() * buffer.element_size()
         
         return total_size
+
+    @staticmethod
+    def _accumulation_ranges(total_size: int, steps: int):
+        if steps <= 1 or total_size <= 1:
+            yield 0, total_size
+            return
+
+        step_size = max(1, total_size // steps)
+        for i in range(steps):
+            start_idx = i * step_size
+            if start_idx >= total_size:
+                break
+            end_idx = (i + 1) * step_size if i < steps - 1 else total_size
+            yield start_idx, end_idx
+
+    def _maybe_clip_gradients(self, params, batch_count: int):
+        if not params or self._grad_clip_interval <= 0:
+            return
+        if batch_count % self._grad_clip_interval != 0:
+            return
+        torch.nn.utils.clip_grad_norm_(params, max_norm=self._grad_clip_norm)
     
     def send_to_device(self, device, dtype=None):
         """Sends the current model to the specified device and dtype, mutating the model"""

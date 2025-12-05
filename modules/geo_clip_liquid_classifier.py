@@ -75,6 +75,8 @@ class GeoLiquidClipModel:
             
         # Save init params for future use
         self.total_batches_trained = 0
+        self._grad_clip_interval = 4
+        self._grad_clip_norm = 1.0
         self.init_params = {
             'lr': lr,
             'num_classes': num_classes,
@@ -121,7 +123,8 @@ class GeoLiquidClipModel:
             accumulated_loss += loss.item()
         
         # Update weights after accumulation
-        torch.nn.utils.clip_grad_norm_(list(self.base.parameters()) + list(self.model.parameters()), max_norm=1.0)
+        params = list(self.base.parameters()) + list(self.model.parameters())
+        self._maybe_clip_gradients(params, self.total_batches_trained + 1)
         self.optimizer.step()
         self.optimizer.zero_grad()
         
@@ -201,6 +204,13 @@ class GeoLiquidClipModel:
             total_size += buffer.numel() * buffer.element_size()
         
         return total_size
+
+    def _maybe_clip_gradients(self, params, batch_count: int):
+        if not params or self._grad_clip_interval <= 0:
+            return
+        if batch_count % self._grad_clip_interval != 0:
+            return
+        torch.nn.utils.clip_grad_norm_(params, max_norm=self._grad_clip_norm)
     
     def send_to_device(self, device, dtype=None):
         """Sends the current model to the specified device and dtype, mutating the model"""

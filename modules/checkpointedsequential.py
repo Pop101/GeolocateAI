@@ -27,23 +27,19 @@ class CheckpointedSequential(nn.Module):
         
         self.checkpoint_segments = checkpoint_segments or []
         
-        # Wrap layers with checkpoint_wrapper if they should be checkpointed
-        processed_layers = []
+        # Use numbered attributes like nn.Sequential for state_dict compatibility
         for i, layer in enumerate(layers):
             if i in self.checkpoint_segments:
-                # Wrap layer with the new checkpoint_wrapper
                 checkpointed_layer = checkpoint_wrapper(
                     layer,
                     checkpoint_impl=CheckpointImpl.NO_REENTRANT
                 )
-                processed_layers.append(checkpointed_layer)
+                self.add_module(str(i), checkpointed_layer)
             else:
-                processed_layers.append(layer)
-        
-        self.layers = nn.ModuleList(processed_layers)
+                self.add_module(str(i), layer)
     
     def forward(self, x):
-        for layer in self.layers:
+        for name, layer in self.named_children():
             x = layer(x)
         return x
     

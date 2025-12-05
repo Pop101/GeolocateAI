@@ -26,6 +26,7 @@ class HierarchyInformation:
         self.leaf_counts = leaf_counts or {}
         self.leaf_offsets = leaf_offsets or {}
         self._size_cache: Dict[Tuple, int] = {}
+        self._child_lookup_cache: Dict[Tuple, Dict[Any, Tuple]] = {}
 
     def clone(self) -> "HierarchyInformation":
         """Return a deep-copied hierarchy information object."""
@@ -86,6 +87,63 @@ class HierarchyInformation:
         offset = self.get_leaf_offset(level)
         size = self.get_leaf_size(level)
         return offset, offset + size
+
+    def _build_child_lookup(self, level: Tuple) -> Tuple[Dict[Any, Tuple], int]:
+        if level in self._child_lookup_cache:
+            none_index = next((idx for idx, value in enumerate(level) if value is None), -1)
+            return self._child_lookup_cache[level], none_index
+
+        children = self.get_children(level)
+        lookup: Dict[Any, Tuple] = {}
+        try:
+            none_index = level.index(None)
+        except ValueError:
+            none_index = -1
+
+        for child in children:
+            if isinstance(child, tuple):
+                lookup[child] = child
+            elif none_index >= 0:
+                new_level = list(level)
+                new_level[none_index] = child
+                lookup[child] = tuple(new_level)
+
+        self._child_lookup_cache[level] = lookup
+        return lookup, none_index
+
+    def advance_to_child(self, level: Tuple, hierarchy_path: Tuple) -> Tuple:
+        """Return the matching child tuple for the provided hierarchy path using cached lookups."""
+        children = self.get_children(level)
+        if not children:
+            return level
+
+        lookup, none_index = self._build_child_lookup(level)
+        if none_index < 0:
+            return level
+
+        target_value = hierarchy_path[none_index]
+        if isinstance(target_value, tuple):
+            cached = lookup.get(target_value)
+            if cached is not None:
+                return cached
+
+        cached = lookup.get(target_value)
+        if cached is not None:
+            return cached
+
+        # Fallback: rebuild mapping including tuple children if not cached
+        for child in children:
+            if isinstance(child, tuple) and child == hierarchy_path:
+                lookup[child] = child
+                return child
+            if not isinstance(child, tuple) and child == target_value:
+                new_level = list(level)
+                new_level[none_index] = child
+                result = tuple(new_level)
+                lookup[child] = result
+                return result
+
+        raise ValueError(f"No child of level {level} matches hierarchy path {hierarchy_path}.")
 
 
 class HierarchicDataset(HierarchyInformation, Dataset):
