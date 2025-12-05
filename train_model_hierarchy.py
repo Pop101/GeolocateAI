@@ -19,7 +19,6 @@ import torch._dynamo
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import bitsandbytes as bnb
 import argparse
 import glob
 import re
@@ -37,6 +36,7 @@ for logger_name in logging.root.manager.loggerDict:
 from modules.image_dataset import ImageDataset
 from modules.hierarchic_dataset import HierarchicDataset, PerLevelSampler, HierarchyInformation
 from modules.hierarchic_geo_clip_liquid_classifier import HierarchicGeoClassifier
+from modules.model_factory import ClipBackboneFactory, SkipAttentionMLPFactory
 from modules.samplers import create_sqrt_sampler
 
 # Shut down unnecessary logging
@@ -343,15 +343,23 @@ def prepare_hierarchical_data(train_dataset: HierarchicDataset, test_dataset: Hi
 
 def create_hierarchical_model(args: argparse.Namespace, hierarchy_info: HierarchyInformation) -> HierarchicGeoClassifier:
     """Create hierarchical model with specified architecture and parameters."""
-    return HierarchicGeoClassifier(
-        hierarchical_structure=hierarchy_info,
+    backbone_factory = ClipBackboneFactory(
         clip_model_name=args.clip_model_name,
-        lr=args.learning_rate,
-        num_head_dims=args.embed_dim,
+        enable_checkpointing=not args.compile
+    )
+    
+    head_factory = SkipAttentionMLPFactory(
+        input_dim=backbone_factory.output_dim,
         num_hidden_dims=args.num_hidden_dims,
         heads=args.heads,
-        depth=args.depth,
-        enable_checkpointing=not args.compile,
+        depth=args.depth
+    )
+
+    return HierarchicGeoClassifier(
+        hierarchical_structure=hierarchy_info,
+        backbone_factory=backbone_factory,
+        head_factory=head_factory,
+        lr=args.learning_rate,
         device=device,
         dtype=torch.bfloat16
     )
@@ -482,7 +490,15 @@ def train_model(model: HierarchicGeoClassifier, train_loader: DataLoader, test_l
                     loss = model.train_batch((images, hierarchical_logits, global_indices, hierarchy_paths), transforms=train_transforms)
                 
                 pbar.update(1)
-                pbar.set_postfix({"Loss": f"{loss:.4f}", "Test Loss": f"{test_loss:.4f}", "Test Acc": f"{test_acc:.4f}"})
+                num_leaves = len(model.leaf_datapoint_counts)
+                avg_samples = sum(model.leaf_datapoint_counts.values()) / max(1, num_leaves)
+                pbar.set_postfix({
+                    "Loss": f"{loss:.4f}",
+                    "Test Loss": f"{test_loss:.4f}",
+                    "Test Acc": f"{test_acc:.4f}",
+                    "Leaves": num_leaves,
+                    "Avg/Leaf": f"{avg_samples:.1f}",
+                })
                 pbar.refresh()
                 
                 # Periodic checkpointing
