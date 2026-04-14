@@ -4,8 +4,13 @@
 # - retrieve information about the hierarchy levels
 # - define a custom sampler for all hierarchy levels
 import copy
-from typing import Callable, Optional, Tuple, Dict, List, Any, Union
+from typing import Callable, Optional, Tuple, Dict, List, Union, NewType
 from torch.utils.data import Dataset, Sampler
+import torch
+
+
+LevelPath = NewType("LevelPath", Tuple[Optional[int], ...])
+LeafPath = NewType("LeafPath", Tuple[int, ...])
 
 
 class HierarchyInformation:
@@ -26,7 +31,7 @@ class HierarchyInformation:
         self.leaf_counts = leaf_counts or {}
         self.leaf_offsets = leaf_offsets or {}
         self._size_cache: Dict[Tuple, int] = {}
-        self._child_lookup_cache: Dict[Tuple, Dict[Any, Tuple]] = {}
+        self._child_lookup_cache: Dict[Tuple, Dict[int, Tuple]] = {}
 
     def clone(self) -> "HierarchyInformation":
         """Return a deep-copied hierarchy information object."""
@@ -38,14 +43,17 @@ class HierarchyInformation:
             leaf_offsets,
         )
 
-    def get_children(self, level: Tuple) -> List[Tuple]:
-        return self.hierarchy_info.get(level, [])
+    def root_level(self) -> LevelPath:
+        return LevelPath(tuple([None] * self.key_length))
 
-    def is_leaf(self, level: Tuple) -> bool:
-        return level in self.leaf_counts
+    def get_children(self, level: LevelPath) -> List[Tuple]:
+        return self.hierarchy_info.get(tuple(level), [])
 
-    def get_leaf_size(self, level: Tuple) -> int:
-        return self.leaf_counts.get(level, 0)
+    def is_leaf(self, level: LevelPath) -> bool:
+        return tuple(level) in self.leaf_counts
+
+    def get_leaf_size(self, level: LevelPath) -> int:
+        return self.leaf_counts.get(tuple(level), 0)
 
     def get_size_of_level(self, level: Tuple) -> int:
         """Get the total number of datapoints at and below a given hierarchy level."""
@@ -77,41 +85,44 @@ class HierarchyInformation:
     def get_level_sizes(self) -> Dict[Tuple, int]:
         return copy.deepcopy(self.leaf_counts)
 
-    def get_leaf_offset(self, level: Tuple) -> int:
+    def get_leaf_offset(self, level: LevelPath) -> int:
         leaf_offsets = getattr(self, "leaf_offsets", {})
-        if level not in leaf_offsets:
-            raise KeyError(f"Leaf offset not found for level {level}.")
-        return leaf_offsets[level]
+        key = tuple(level)
+        if key not in leaf_offsets:
+            raise KeyError(f"Leaf offset not found for level {key}.")
+        return leaf_offsets[key]
 
-    def get_leaf_index_range(self, level: Tuple) -> Tuple[int, int]:
+    def get_leaf_index_range(self, level: LevelPath) -> Tuple[int, int]:
         offset = self.get_leaf_offset(level)
         size = self.get_leaf_size(level)
         return offset, offset + size
 
-    def _build_child_lookup(self, level: Tuple) -> Tuple[Dict[Any, Tuple], int]:
-        if level in self._child_lookup_cache:
+    def _build_child_lookup(self, level: LevelPath) -> Tuple[Dict[int, Tuple], int]:
+        key = tuple(level)
+        if key in self._child_lookup_cache:
             none_index = next((idx for idx, value in enumerate(level) if value is None), -1)
-            return self._child_lookup_cache[level], none_index
+            return self._child_lookup_cache[key], none_index
 
         children = self.get_children(level)
-        lookup: Dict[Any, Tuple] = {}
+        lookup: Dict[int, Tuple] = {}
         try:
-            none_index = level.index(None)
+            none_index = tuple(level).index(None)
         except ValueError:
             none_index = -1
 
         for child in children:
             if isinstance(child, tuple):
-                lookup[child] = child
-            elif none_index >= 0:
+                # Child is a fully-specified tuple key; not addressable by an int at this depth.
+                continue
+            if none_index >= 0:
                 new_level = list(level)
                 new_level[none_index] = child
-                lookup[child] = tuple(new_level)
+                lookup[int(child)] = tuple(new_level)
 
-        self._child_lookup_cache[level] = lookup
+        self._child_lookup_cache[key] = lookup
         return lookup, none_index
 
-    def advance_to_child(self, level: Tuple, hierarchy_path: Tuple) -> Tuple:
+    def advance_to_child(self, level: LevelPath, leaf_path: LeafPath) -> LevelPath:
         """Return the matching child tuple for the provided hierarchy path using cached lookups."""
         children = self.get_children(level)
         if not children:
@@ -121,29 +132,23 @@ class HierarchyInformation:
         if none_index < 0:
             return level
 
-        target_value = hierarchy_path[none_index]
-        if isinstance(target_value, tuple):
-            cached = lookup.get(target_value)
-            if cached is not None:
-                return cached
-
+        target_value = int(leaf_path[none_index])
         cached = lookup.get(target_value)
         if cached is not None:
             return cached
 
         # Fallback: rebuild mapping including tuple children if not cached
         for child in children:
-            if isinstance(child, tuple) and child == hierarchy_path:
-                lookup[child] = child
-                return child
-            if not isinstance(child, tuple) and child == target_value:
+            if isinstance(child, tuple):
+                continue
+            if int(child) == target_value:
                 new_level = list(level)
-                new_level[none_index] = child
+                new_level[none_index] = int(child)
                 result = tuple(new_level)
-                lookup[child] = result
-                return result
+                lookup[target_value] = result
+                return LevelPath(result)
 
-        raise ValueError(f"No child of level {level} matches hierarchy path {hierarchy_path}.")
+        raise ValueError(f"No child of level {tuple(level)} matches leaf path {tuple(leaf_path)}.")
 
 
 class HierarchicDataset(HierarchyInformation, Dataset):
@@ -153,7 +158,7 @@ class HierarchicDataset(HierarchyInformation, Dataset):
     level 0 IS THE MOST GRANULAR LEVEL, level n IS THE MOST GENERAL/COARSE/TOP LEVEL/
     """
 
-    def __init__(self, data: Dict[Tuple, Union[List[Any], Dataset]], hierarchy_info: Dict[Tuple, List[Tuple]]):
+    def __init__(self, data: Dict[Tuple, Dataset], hierarchy_info: Dict[Tuple, List[Tuple]]):
         """Initialize the HierarchicDataset with data and hierarchy information.
         Args:
             data (Dict[Tuple, Any]): The dataset organized in a hierarchical manner. Keys: Tuple representing hierarchy levels, Values: data samples.
@@ -163,17 +168,46 @@ class HierarchicDataset(HierarchyInformation, Dataset):
         - data keys are COMPLETE tuples (none have null/missing levels)
         - hierarchy_info keys are nullable and in right-triangle form (e.g., (None, None), (None, 1), (1, 2), etc.)
         """
-        self.data = data
-        leaf_counts = {level: len(samples) for level, samples in data.items()}
         key_length = len(next(iter(data.keys())))
+
+        def _to_leaf_key(raw_key: Tuple) -> LeafPath:
+            leaf_key = LeafPath(tuple(int(v) for v in raw_key))
+            if len(leaf_key) != key_length:
+                raise ValueError(f"LeafPath length {len(leaf_key)} != expected {key_length}: {leaf_key}")
+            return leaf_key
+
+        def _to_level_key(raw_level: Tuple) -> LevelPath:
+            level = LevelPath(tuple(None if v in (None, "") else int(v) for v in raw_level))
+            if len(level) != key_length:
+                raise ValueError(f"LevelPath length {len(level)} != expected {key_length}: {level}")
+            return level
+
+        def _normalize_children(raw_children: List[int]) -> List[Tuple]:
+            children: List[Tuple] = []
+            for child in raw_children:
+                if isinstance(child, tuple):
+                    children.append(tuple(_to_level_key(child)))
+                else:
+                    children.append(int(child))
+            return children
+
+        # Normalize keys into strong types so downstream users don't need coercion.
+        self.data = {_to_leaf_key(k): v for k, v in data.items()}
+
+        # Normalize hierarchy_info into a LevelPath -> children mapping.
+        normalized_hierarchy_info: Dict[LevelPath, List[Tuple]] = {
+            _to_level_key(level): _normalize_children(children)
+            for level, children in hierarchy_info.items()
+        }
+        leaf_counts = {tuple(level): len(samples) for level, samples in self.data.items()}
         self._cumulative_counts = {}
         self._count = 0
         for hpath in self.data.keys():
-            self._cumulative_counts[hpath] = self._count
+            self._cumulative_counts[tuple(hpath)] = self._count
             self._count += len(self.data[hpath])
 
         super().__init__(
-            hierarchy_info,
+            {tuple(k): v for k, v in normalized_hierarchy_info.items()},
             leaf_counts=leaf_counts,
             key_length=key_length,
             leaf_offsets=self._cumulative_counts,
@@ -184,7 +218,7 @@ class HierarchicDataset(HierarchyInformation, Dataset):
         """Get the total number of datapoints in the dataset."""
         return self._count
     
-    def __getitem__(self, idx: int) -> Any:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, Tuple[float, float], LeafPath, int]:
         """Retrieve a datapoint by its global index."""
         if idx < 0 or idx >= self._count:
             raise IndexError("Index out of range.")
@@ -196,20 +230,25 @@ class HierarchicDataset(HierarchyInformation, Dataset):
                 local_idx = idx - start_idx
                 sample = self.data[hpath][local_idx]
                 if isinstance(sample, tuple):
-                    return (*sample, idx)
-                return sample, idx
+                    # Expected sample format from ImageDataset: (image_tensor, output_val)
+                    image, output_val = sample
+                    return image, output_val, self.get_leaf_path(idx), idx
+                raise TypeError(
+                    "Leaf datasets must return (image_tensor, (lat, lon)) tuples. "
+                    f"Got type={type(sample)} at idx={idx}."
+                )
         
         raise IndexError("Index not found in dataset.")
     
-    def get_hierarchy_path(self, idx: int) -> Tuple:
-        """Get the hierarchy path (tuple) for a given global index."""
+    def get_leaf_path(self, idx: int) -> LeafPath:
+        """Get the LeafPath for a given global index."""
         if idx < 0 or idx >= self._count:
             raise IndexError("Index out of range.")
         
         for hpath, start_idx in self._cumulative_counts.items():
             end_idx = start_idx + len(self.data[hpath])
             if start_idx <= idx < end_idx:
-                return hpath
+                return LeafPath(tuple(int(v) for v in hpath))
         
         raise IndexError("Index not found in dataset.")
     
@@ -251,7 +290,7 @@ class PerLevelSampler(Sampler):
     """
     
     def __init__(self, dataset: HierarchicDataset, 
-                 sampler_factory: Callable[[List[Any]], Sampler],
+                 sampler_factory: Callable[[List[int]], Sampler],
                  num_samples: Optional[int] = None,
                  respect_factory_stopiteration: bool = False):
         """
@@ -413,7 +452,7 @@ if __name__ == "__main__":
     print(f"Total dataset size: {len(hd)}")
     for i in range(5):
         item = hd[i]
-        path = hd.get_hierarchy_path(i)
+        path = hd.get_leaf_path(i)
         print(f"Index {i}: Hierarchy Path {path}, Data: {item}")
         
     # Example usage of PerLevelSampler
@@ -421,5 +460,5 @@ if __name__ == "__main__":
     sampler = PerLevelSampler(hd, create_sqrt_sampler, num_samples=20)
     print("\nSampled indices:")
     for idx in sampler:
-        path = hd.get_hierarchy_path(idx)
+        path = hd.get_leaf_path(idx)
         print(f"Sampled Index {idx}: Hierarchy Path {path}, Data: {hd[idx]}")

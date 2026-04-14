@@ -43,6 +43,20 @@ class AbstractGeoClassifier(ABC):
             return max(group['lr'] for group in self.optimizer.param_groups)
         return 0.0
 
+    def _move_batch_to_device(self, images, logits_dict):
+        """Move images and hierarchical logits to the classifier device/dtype."""
+        if self.device is None:
+            return images, logits_dict
+        images = images.to(self.device, dtype=self.dtype)
+        moved = {
+            level: (
+                ids.to(self.device),
+                probs.to(self.device, dtype=self.dtype)
+            )
+            for level, (ids, probs) in logits_dict.items()
+        }
+        return images, moved
+
     def send_to_device(self, device, dtype=None):
         """Moves the model and all its components to the specified device."""
         if dtype is None:

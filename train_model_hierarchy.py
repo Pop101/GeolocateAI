@@ -13,6 +13,7 @@ logging.getLogger().setLevel(logging.WARNING)
 # Now do the actual imports
 import polars as pl
 import numpy as np
+from dataclasses import dataclass
 from torch.utils.data import DataLoader
 import torch
 import torch._dynamo
@@ -26,7 +27,7 @@ import gc
 from itertools import islice
 from functools import partial
 from tqdm import tqdm
-from typing import Tuple, Optional, Dict, Any, List
+from typing import Tuple, Optional, Dict, List, Sequence, Mapping
 import ast
 
 # Suppress new loggers
@@ -34,10 +35,31 @@ for logger_name in logging.root.manager.loggerDict:
     logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 from modules.image_dataset import ImageDataset
-from modules.hierarchic_dataset import HierarchicDataset, PerLevelSampler, HierarchyInformation
+from modules.hierarchic_dataset import HierarchicDataset, PerLevelSampler, HierarchyInformation, LeafPath
 from modules.hierarchic_geo_clip_liquid_classifier import HierarchicGeoClassifier
 from modules.model_factory import ClipBackboneFactory, SkipAttentionMLPFactory
 from modules.samplers import create_sqrt_sampler
+
+
+@dataclass(frozen=True)
+class LevelCentroids:
+    """Centroid metadata for a single hierarchy level.
+
+    For a fixed level `L`, this represents all clusters at that level.
+    Each tensor is 1D with equal length `num_clusters`.
+
+    Conceptually: used to turn (lat, lon, true_cluster_id) into a soft target
+    distribution over all clusters at that level via a distance-based score.
+    """
+
+    cluster_ids: torch.Tensor  # int64, shape: [num_clusters]
+    lats: torch.Tensor         # float32, shape: [num_clusters]
+    lons: torch.Tensor         # float32, shape: [num_clusters]
+    mean_dists: torch.Tensor   # float32, shape: [num_clusters]
+    std_dists: torch.Tensor    # float32, shape: [num_clusters]
+
+
+LevelCentroidsByLevel = Mapping[int, LevelCentroids]
 
 # Shut down unnecessary logging
 logging.getLogger("deepspeed").setLevel(logging.ERROR)
@@ -59,7 +81,7 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cuda.enable_mem_efficient_sdp(True)
 
 
-def load_hierarchical_structure(coords_path: str, centroids_path: str, hierarchy_path: str, train_test_split: float = 0.85) -> Tuple[HierarchicDataset, HierarchicDataset, Dict[int, Tuple[torch.Tensor, ...]], int]:
+def load_hierarchical_structure(coords_path: str, centroids_path: str, hierarchy_path: str, train_test_split: float = 0.85) -> Tuple[HierarchicDataset, HierarchicDataset, Dict[int, LevelCentroids], int]:
     """
     Load hierarchical structure from CSV files and create train/test HierarchicDatasets.
     Returns (train_dataset, test_dataset, level_tensors, num_levels).
@@ -94,8 +116,8 @@ def load_hierarchical_structure(coords_path: str, centroids_path: str, hierarchy
         strict=False
     )
     
-    # Per-level tensors store (cluster_ids, lat, lon, mean_dist, std_dist)
-    level_tensors = {}
+    # Per-level centroid metadata used to build distance-based targets.
+    level_tensors: Dict[int, LevelCentroids] = {}
     
     for level in range(num_levels):
         cluster_col = f'cluster_{level}'
@@ -117,12 +139,12 @@ def load_hierarchical_structure(coords_path: str, centroids_path: str, hierarchy
         
         # Convert to tensors
         data = level_df.to_numpy()
-        level_tensors[level] = (
-            torch.tensor(data[:, 0].astype(int)),
-            torch.tensor(data[:, 1]),
-            torch.tensor(data[:, 2]),
-            torch.tensor(data[:, 3]),
-            torch.tensor(data[:, 4])
+        level_tensors[level] = LevelCentroids(
+            cluster_ids=torch.tensor(data[:, 0].astype(int), dtype=torch.int64),
+            lats=torch.tensor(data[:, 1], dtype=torch.float32),
+            lons=torch.tensor(data[:, 2], dtype=torch.float32),
+            mean_dists=torch.tensor(data[:, 3], dtype=torch.float32),
+            std_dists=torch.tensor(data[:, 4], dtype=torch.float32),
         )
     
     # Load hierarchy from CSV
@@ -195,12 +217,18 @@ def load_hierarchical_structure(coords_path: str, centroids_path: str, hierarchy
     return train_dataset, test_dataset, level_tensors, num_levels
 
 
-def get_hierarchical_batch_logits(batch: Tuple[torch.Tensor, Any, torch.Tensor], level_tensors: Dict[int, Tuple[torch.Tensor, ...]]) -> Tuple[torch.Tensor, Dict[int, Tuple[torch.Tensor, torch.Tensor]], List[Tuple], torch.Tensor]:
+HierarchicalLogits = Dict[int, Tuple[torch.Tensor, torch.Tensor]]
+
+
+def get_hierarchical_batch_logits(
+    batch: Tuple[torch.Tensor, Sequence[Tuple[float, float]], Sequence[LeafPath], torch.Tensor],
+    level_tensors: LevelCentroidsByLevel,
+) -> Tuple[torch.Tensor, HierarchicalLogits, List[Tuple[int, ...]], torch.Tensor]:
     """
     Convert batch to (images, hierarchical_logits_dict, hierarchy_paths, global_indices).
     hierarchical_logits_dict maps level -> (cluster_ids, target distributions) for that level.
     """
-    images, outputs, global_indices = batch
+    images, outputs, leaf_paths, global_indices = batch
     batch_size = len(outputs)
     assert batch_size > 0, "Empty batch received"
     assert len(level_tensors) > 0, "No level tensors provided"
@@ -220,12 +248,11 @@ def get_hierarchical_batch_logits(batch: Tuple[torch.Tensor, Any, torch.Tensor],
     num_levels = len(level_tensors)
     batch_clusters = {}
     hierarchy_paths = []
-    
+
     for i in range(batch_size):
-        assert len(outputs[i]) >= 2 + num_levels, f"Output {i} has insufficient data: expected {2 + num_levels}, got {len(outputs[i])}"
-        clusters = tuple(int(outputs[i][2 + level]) for level in range(num_levels))
+        clusters = tuple(int(leaf_paths[i][level]) for level in range(num_levels))
         hierarchy_paths.append(clusters)
-        
+
         for level in range(num_levels):
             if level not in batch_clusters:
                 batch_clusters[level] = []
@@ -239,8 +266,14 @@ def get_hierarchical_batch_logits(batch: Tuple[torch.Tensor, Any, torch.Tensor],
     hierarchical_logits = {}
     
     for level in range(num_levels):
-        # level_tensors[level] stores (cluster_ids, latitudes, longitudes, mean_distances, std_distances)
-        cluster_ids, lats, lons, mean_dists, std_dists = level_tensors[level]
+        centroids = level_tensors[level]
+        cluster_ids, lats, lons, mean_dists, std_dists = (
+            centroids.cluster_ids,
+            centroids.lats,
+            centroids.lons,
+            centroids.mean_dists,
+            centroids.std_dists,
+        )
         
         assert len(cluster_ids) > 0, f"No clusters for level {level}"
         assert torch.all(mean_dists > 0), f"Invalid mean_dists at level {level}: must be positive"
@@ -274,28 +307,42 @@ def get_hierarchical_batch_logits(batch: Tuple[torch.Tensor, Any, torch.Tensor],
     return images, hierarchical_logits, hierarchy_paths, global_indices
 
 
-def collate_hierarchical_logits(batch: list, level_tensors: Dict[int, Tuple[torch.Tensor, ...]]) -> Tuple[torch.Tensor, Dict[int, torch.Tensor], List[Tuple], torch.Tensor]:
+def collate_hierarchical_logits(
+    batch: list[Tuple[torch.Tensor, Tuple[float, float], LeafPath, int]],
+    level_tensors: LevelCentroidsByLevel,
+) -> Tuple[torch.Tensor, HierarchicalLogits, List[Tuple[int, ...]], torch.Tensor]:
     """Collate batch and compute hierarchical logits."""
     assert len(batch) > 0, "Empty batch received in collate function"
     
     valid = []
     indices = []
+    leaf_paths = []
     for sample in batch:
         if not isinstance(sample, tuple):
             continue
-        if len(sample) == 3:
-            img, out, idx = sample
-        elif len(sample) == 2:
-            img, out = sample
-            idx = None
-        else:
+        if len(sample) != 4:
             continue
+        img, out, leaf_path, idx = sample
         if not torch.is_tensor(img) or not isinstance(out, tuple):
             continue
         if idx is None:
             raise ValueError("HierarchicDataset must return global indices for each sample")
         valid.append((img, out))
+        leaf_paths.append(leaf_path)
         indices.append(int(idx))
+
+    # Normalize + validate paths (DataLoader workers may coerce tuples into lists).
+    normalized_leaf_paths: list[LeafPath] = []
+    for p in leaf_paths:
+        if torch.is_tensor(p):
+            raise TypeError(f"Expected LeafPath (tuple[int,...]) but got tensor: {p}")
+        if isinstance(p, list):
+            p = tuple(p)
+        if not isinstance(p, tuple):
+            raise TypeError(f"Expected LeafPath (tuple[int,...]) but got {type(p)}")
+        if len(p) == 0:
+            raise ValueError("LeafPath must not be empty")
+        normalized_leaf_paths.append(LeafPath(tuple(int(v) for v in p)))
     
     if not valid:
         raise ValueError(f"No valid samples in batch of size {len(batch)}")
@@ -307,11 +354,11 @@ def collate_hierarchical_logits(batch: list, level_tensors: Dict[int, Tuple[torc
     outputs = [item[1] for item in valid]
     indices_tensor = torch.tensor(indices, dtype=torch.int64)
     
-    return get_hierarchical_batch_logits((images, outputs, indices_tensor), level_tensors)
+    return get_hierarchical_batch_logits((images, outputs, normalized_leaf_paths, indices_tensor), level_tensors)
 
 
 def prepare_hierarchical_data(train_dataset: HierarchicDataset, test_dataset: HierarchicDataset, 
-                              level_tensors: Dict[int, Tuple[torch.Tensor, ...]], 
+                              level_tensors: LevelCentroidsByLevel, 
                               batch_size: int, batch_size_test: int) -> Tuple[DataLoader, DataLoader]:
     """Prepare train and test data loaders with hierarchical sampling."""
     assert len(train_dataset) > 0, "Empty training dataset"

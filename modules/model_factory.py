@@ -87,9 +87,6 @@ class SkipAttentionMLPFactory(ModelFactory):
     @property
     def output_dim(self) -> int:
         return self._output_dim
-    
-    def set_output_dim(self, dim: int):
-        self._output_dim = dim
 
     def create_model(self, output_dim: int = None, **kwargs) -> nn.Module:
         # Allow overriding output_dim at creation time (useful for hierarchical levels)
